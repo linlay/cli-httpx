@@ -27,6 +27,7 @@ type compiledRequest struct {
 	Method       string            `json:"method"`
 	URL          string            `json:"url"`
 	Headers      map[string]string `json:"headers,omitempty"`
+	Cookies      map[string]string `json:"cookies,omitempty"`
 	Body         any               `json:"body,omitempty"`
 	TimeoutMS    int64             `json:"timeout_ms"`
 	Retries      int               `json:"retries"`
@@ -122,6 +123,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 	res := resolver{
 		state:  state,
 		reveal: req.Kind != commandInspect || req.Options.Reveal,
+		params: req.Options.Params,
 	}
 	ctx := context.Background()
 
@@ -139,6 +141,19 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 			value = redactedValue
 		}
 		headers[key] = value
+	}
+
+	cookies := map[string]string{}
+	for key, raw := range merged.Cookies {
+		resolved, err := res.resolveAny(ctx, raw)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		value, err := stringifyScalar(resolved)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		cookies[key] = value
 	}
 
 	baseURL, err := url.Parse(prof.BaseURL)
@@ -175,7 +190,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 			if err != nil {
 				return nil, nil, nil, err
 			}
-			value, err := stringifyScalar(resolved)
+			value, err := stringifyFormValue(resolved)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -208,6 +223,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 		Method:       merged.Method,
 		URL:          finalURL.String(),
 		Headers:      headers,
+		Cookies:      cookies,
 		Body:         bodyValue,
 		TimeoutMS:    merged.Timeout.Milliseconds(),
 		Retries:      merged.Retries,
@@ -263,6 +279,11 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 	}
 	for key, value := range compiled.Headers {
 		request.Header.Set(key, value)
+	}
+	if len(compiled.Cookies) > 0 {
+		for name, value := range compiled.Cookies {
+			request.AddCookie(&http.Cookie{Name: name, Value: value})
+		}
 	}
 
 	start := time.Now()

@@ -8,6 +8,31 @@ import (
 	"strings"
 )
 
+type paramValues map[string]string
+
+func (p *paramValues) String() string {
+	if p == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(*p))
+	for key, value := range *p {
+		parts = append(parts, key+"="+value)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (p *paramValues) Set(raw string) error {
+	key, value, ok := strings.Cut(raw, "=")
+	if !ok || strings.TrimSpace(key) == "" {
+		return fmt.Errorf("invalid --param %q, expected key=value", raw)
+	}
+	if *p == nil {
+		*p = map[string]string{}
+	}
+	(*p)[key] = value
+	return nil
+}
+
 func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 	req, err := parseArgs(args)
 	if err != nil {
@@ -37,6 +62,7 @@ func parseArgs(args []string) (commandRequest, error) {
 	fs.BoolVar(&opts.Reveal, "reveal", false, "show secret values in inspect output")
 	format := string(opts.Format)
 	fs.StringVar(&format, "format", format, "output format: json|body")
+	fs.Var((*paramValues)(&opts.Params), "param", "action parameter in key=value form; repeatable")
 
 	if err := fs.Parse(args); err != nil {
 		return commandRequest{}, err
@@ -97,6 +123,7 @@ func usageText() string {
 		"  --format json|body",
 		"  --timeout <duration>",
 		"  --state-dir <path>",
+		"  --param key=value",
 		"  --reveal",
 	}
 	return strings.Join(lines, "\n") + "\n"

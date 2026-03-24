@@ -17,6 +17,7 @@ const redactedValue = "***"
 type resolver struct {
 	state  *profileState
 	reveal bool
+	params map[string]string
 }
 
 type sourceSpec struct {
@@ -26,6 +27,8 @@ type sourceSpec struct {
 	Cmd       string
 	TimeoutMS int
 	Trim      bool
+	Value     any
+	Default   any
 }
 
 func (r resolver) resolveAny(ctx context.Context, value any) (any, error) {
@@ -73,6 +76,26 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 	}
 	spec := sourceSpec{From: from}
 	switch from {
+	case "literal":
+		if err := rejectUnknownSourceKeys(input, "from", "value"); err != nil {
+			return sourceSpec{}, false, err
+		}
+		value, ok := input["value"]
+		if !ok {
+			return sourceSpec{}, false, fmt.Errorf("%w: literal source requires value", ErrConfig)
+		}
+		spec.Value = value
+	case "param":
+		if err := rejectUnknownSourceKeys(input, "from", "key", "default", "trim"); err != nil {
+			return sourceSpec{}, false, err
+		}
+		spec.Key, ok = input["key"].(string)
+		if !ok || spec.Key == "" {
+			return sourceSpec{}, false, fmt.Errorf("%w: param source requires non-empty key", ErrConfig)
+		}
+		if value, ok := input["default"]; ok {
+			spec.Default = value
+		}
 	case "env":
 		if err := rejectUnknownSourceKeys(input, "from", "key", "trim"); err != nil {
 			return sourceSpec{}, false, err
@@ -131,11 +154,30 @@ func rejectUnknownSourceKeys(input map[string]any, allowed ...string) error {
 }
 
 func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (string, error) {
-	if !r.reveal {
+	if !r.reveal && spec.From != "literal" {
+		if spec.From == "param" {
+			if _, ok := r.params[spec.Key]; !ok && spec.Default != nil {
+				return stringifyScalar(spec.Default)
+			}
+		}
 		return redactedValue, nil
 	}
 
 	switch spec.From {
+	case "literal":
+		return stringifyScalar(spec.Value)
+	case "param":
+		if value, ok := r.params[spec.Key]; ok {
+			return maybeTrim(value, spec.Trim), nil
+		}
+		if spec.Default != nil {
+			value, err := stringifyScalar(spec.Default)
+			if err != nil {
+				return "", err
+			}
+			return maybeTrim(value, spec.Trim), nil
+		}
+		return "", fmt.Errorf("%w: parameter %q not provided", ErrExecution, spec.Key)
 	case "env":
 		value, ok := os.LookupEnv(spec.Key)
 		if !ok {
@@ -212,6 +254,19 @@ func stringifyScalar(value any) (string, error) {
 		return fmt.Sprint(typed), nil
 	default:
 		return "", fmt.Errorf("%w: expected scalar value, got %T", ErrConfig, value)
+	}
+}
+
+func stringifyFormValue(value any) (string, error) {
+	switch value.(type) {
+	case map[string]any, []any:
+		content, err := json.Marshal(value)
+		if err != nil {
+			return "", fmt.Errorf("%w: encode form value: %v", ErrConfig, err)
+		}
+		return string(content), nil
+	default:
+		return stringifyScalar(value)
 	}
 }
 

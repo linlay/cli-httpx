@@ -36,6 +36,7 @@ type profile struct {
 	Timeout     durationValue     `toml:"timeout"`
 	Retries     int               `toml:"retries"`
 	Headers     map[string]any    `toml:"headers"`
+	Cookies     map[string]any    `toml:"cookies"`
 	Query       map[string]any    `toml:"query"`
 	Actions     map[string]action `toml:"actions"`
 }
@@ -46,6 +47,7 @@ type action struct {
 	Timeout      *durationValue    `toml:"timeout"`
 	Retries      *int              `toml:"retries"`
 	Headers      map[string]any    `toml:"headers"`
+	Cookies      map[string]any    `toml:"cookies"`
 	Query        map[string]any    `toml:"query"`
 	Body         any               `toml:"body"`
 	Form         map[string]any    `toml:"form"`
@@ -61,6 +63,7 @@ type mergedAction struct {
 	Timeout      time.Duration
 	Retries      int
 	Headers      map[string]any
+	Cookies      map[string]any
 	Query        map[string]any
 	Body         any
 	Form         map[string]any
@@ -174,6 +177,7 @@ func mergeAction(actionName string, prof profile, act action, timeoutOverride ti
 		Timeout:      timeout,
 		Retries:      retries,
 		Headers:      mergeMap(prof.Headers, act.Headers),
+		Cookies:      mergeMap(prof.Cookies, act.Cookies),
 		Query:        mergeMap(prof.Query, act.Query),
 		Body:         act.Body,
 		Form:         copyMap(act.Form),

@@ -15,6 +15,7 @@ type globalOptions struct {
 	Timeout    time.Duration
 	StateDir   string
 	Reveal     bool
+	Params     map[string]string
 }
 
 type commandKind string

@@ -161,6 +161,178 @@ func TestResolverSupportsEnvFileShellAndState(t *testing.T) {
 	}
 }
 
+func TestParseArgsSupportsRepeatableParams(t *testing.T) {
+	t.Parallel()
+
+	req, err := parseArgs([]string{
+		"--param", "user=alice",
+		"--param", "page=2",
+		"run", "demo", "list",
+	})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if req.Options.Params["user"] != "alice" || req.Options.Params["page"] != "2" {
+		t.Fatalf("unexpected params: %#v", req.Options.Params)
+	}
+}
+
+func TestCompileSupportsParamAndLiteralSources(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+
+[profiles.demo]
+base_url = %q
+
+[profiles.demo.actions.search]
+path = "/search"
+headers = { X-Mode = { from = "literal", value = "agent" } }
+query = { q = { from = "param", key = "query" }, page = { from = "param", key = "page", default = 1 } }
+body = { keyword = { from = "param", key = "query" }, source = { from = "literal", value = "cli" } }
+`, server.URL))
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	rt := NewRuntime(ioDiscard{}, ioDiscard{})
+	req := commandRequest{
+		Kind:    commandRun,
+		Profile: "demo",
+		Action:  "search",
+		Options: globalOptions{
+			ConfigPath: configPath,
+			StateDir:   t.TempDir(),
+			Format:     formatJSON,
+			Params: map[string]string{
+				"query": "golang",
+			},
+		},
+	}
+
+	compiled, _, _, err := rt.compile(req, cfg, &profileState{Values: map[string]string{}})
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	if compiled.Headers["X-Mode"] != "agent" {
+		t.Fatalf("unexpected literal header: %#v", compiled.Headers)
+	}
+	if !strings.Contains(compiled.URL, "q=golang") || !strings.Contains(compiled.URL, "page=1") {
+		t.Fatalf("unexpected param URL: %s", compiled.URL)
+	}
+	body, ok := compiled.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map body, got %#v", compiled.Body)
+	}
+	if body["keyword"] != "golang" || body["source"] != "cli" {
+		t.Fatalf("unexpected body: %#v", compiled.Body)
+	}
+}
+
+func TestCompileSupportsCookies(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+
+[profiles.demo]
+base_url = %q
+cookies = { locale = "zh-CN" }
+
+[profiles.demo.actions.me]
+path = "/me"
+cookies = { session = { from = "state", key = "auth.session" }, mode = { from = "literal", value = "agent" } }
+`, server.URL))
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	rt := NewRuntime(ioDiscard{}, ioDiscard{})
+	req := commandRequest{
+		Kind:    commandRun,
+		Profile: "demo",
+		Action:  "me",
+		Options: globalOptions{
+			ConfigPath: configPath,
+			StateDir:   t.TempDir(),
+			Format:     formatJSON,
+		},
+	}
+
+	compiled, _, _, err := rt.compile(req, cfg, &profileState{Values: map[string]string{"auth.session": "abc123"}})
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	if compiled.Cookies["locale"] != "zh-CN" || compiled.Cookies["session"] != "abc123" || compiled.Cookies["mode"] != "agent" {
+		t.Fatalf("unexpected compiled cookies: %#v", compiled.Cookies)
+	}
+}
+
+func TestCompileFormEncodesNestedObjectsAsJSONString(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+
+[profiles.demo]
+base_url = %q
+
+[profiles.demo.actions.login]
+method = "POST"
+path = "/login"
+form = { data = { UserId = "alice", Password = "secret", SystemType = "100", ClientType = "2" } }
+`, server.URL))
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	rt := NewRuntime(ioDiscard{}, ioDiscard{})
+	req := commandRequest{
+		Kind:    commandRun,
+		Profile: "demo",
+		Action:  "login",
+		Options: globalOptions{
+			ConfigPath: configPath,
+			StateDir:   t.TempDir(),
+			Format:     formatJSON,
+		},
+	}
+
+	compiled, _, _, err := rt.compile(req, cfg, &profileState{Values: map[string]string{}})
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	encodedBody := string(compiled.BodyBytes)
+	if !strings.HasPrefix(encodedBody, "data=") {
+		t.Fatalf("expected form field named data, got %q", encodedBody)
+	}
+	if !strings.Contains(encodedBody, "%22UserId%22%3A%22alice%22") {
+		t.Fatalf("expected nested object to be JSON-encoded in form body, got %q", encodedBody)
+	}
+
+	body, ok := compiled.Body.(map[string]string)
+	if !ok {
+		t.Fatalf("expected inspect body to be string form map, got %#v", compiled.Body)
+	}
+	if !strings.Contains(body["data"], `"UserId":"alice"`) {
+		t.Fatalf("expected nested object stringified in inspect body, got %#v", body)
+	}
+}
+
 func TestResolverReportsMissingEnvAndShellTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -171,6 +343,10 @@ func TestResolverReportsMissingEnvAndShellTimeout(t *testing.T) {
 
 	if _, err := r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "HTTPX_MISSING_ENV"}); err == nil || !errors.Is(err, ErrExecution) {
 		t.Fatalf("expected missing env execution error, got %v", err)
+	}
+
+	if _, err := r.resolveAny(context.Background(), map[string]any{"from": "param", "key": "missing"}); err == nil || !errors.Is(err, ErrExecution) {
+		t.Fatalf("expected missing param execution error, got %v", err)
 	}
 
 	_, err := r.resolveAny(context.Background(), map[string]any{
@@ -270,6 +446,64 @@ extract = ".body.value"
 		t.Fatalf("unexpected envelope: %#v", env)
 	}
 	if value, ok := env.Extract.(float64); !ok || value != 42 {
+		t.Fatalf("unexpected extract: %#v", env.Extract)
+	}
+}
+
+func TestRunSupportsExplicitCookiesFromState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"session_id":"session-123"}`))
+		case "/me":
+			cookie, err := r.Cookie("oem.sessionid")
+			if err != nil || cookie.Value != "session-123" {
+				http.Error(w, "missing oem.sessionid", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+
+[profiles.demo]
+base_url = %q
+login_action = "login"
+
+[profiles.demo.actions.login]
+method = "POST"
+path = "/login"
+save = { "oem.sessionid" = ".body.session_id" }
+
+[profiles.demo.actions.me]
+path = "/me"
+cookies = { "oem.sessionid" = { from = "state", key = "oem.sessionid" } }
+extract = ".body.ok"
+`, server.URL))
+
+	stateDir := t.TempDir()
+	_, _, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "login", "demo"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("login failed with exit=%d", exitCode)
+	}
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "run", "demo", "me"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	var env envelope
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("unmarshal run output: %v", err)
+	}
+	if ok, _ := env.Extract.(bool); !ok {
 		t.Fatalf("unexpected extract: %#v", env.Extract)
 	}
 }
