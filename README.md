@@ -8,6 +8,14 @@
 httpx run <profile> <action>
 ```
 
+默认输出响应体，也就是默认等价于 `--format body`。
+
+如果一个 action 需要运行时传参，也可以在命令行上追加：
+
+```bash
+httpx --param key=value run <profile> <action>
+```
+
 ## 适合什么场景
 
 - 先登录，再调用多个接口
@@ -40,6 +48,13 @@ httpx inspect <profile> <action>
 - `login`：执行配置里的登录动作，保存 cookie 和提取出的状态值
 - `run`：执行一个接口动作
 - `inspect`：只展示最终请求，不真正发请求，默认会脱敏
+
+全局参数可以放在命令前，也可以放在命令后。例如下面两种写法都可以：
+
+```bash
+httpx --config ./config.toml --format json run demo me
+httpx run --format json --config ./config.toml demo me
+```
 
 ## 最快上手
 
@@ -81,6 +96,12 @@ httpx --config ./config.toml login demo
 
 ```bash
 httpx --config ./config.toml run demo me
+```
+
+5. 如果 action 需要运行时参数：
+
+```bash
+httpx --config ./config.toml --param user_id=100 run demo user
 ```
 
 ## 配置结构
@@ -133,12 +154,25 @@ action 常用字段：
 - `method`：HTTP 方法，不写时会自动推断
 - `path`：请求路径，必填
 - `headers`：请求头
+- `cookies`：显式请求 cookie
 - `query`：查询参数
 - `body`：JSON 请求体或纯文本请求体
 - `form`：表单请求体，和 `body` 二选一
 - `expect_status`：期望状态码，不写时默认接受 `2xx`
 - `extract`：用 `jq` 风格表达式提取结果
 - `save`：从响应里提取值并保存到本地状态
+
+`form` 里的值默认按普通表单字段发送；如果某个表单值本身是对象或数组，`httpx` 会先把它编码成 JSON 字符串，再作为该字段的值发送。
+
+```toml
+form = { data = { UserId = "alice", Password = "secret" } }
+```
+
+上面会发成：
+
+```text
+data={"UserId":"alice","Password":"secret"}
+```
 
 ## 动态取值
 
@@ -166,6 +200,46 @@ headers = { Authorization = { from = "shell", cmd = "pass demo/token", trim = tr
 
 ```toml
 headers = { Authorization = { from = "state", key = "auth.authorization" } }
+```
+
+如果某个站点除了服务端下发的 cookie 之外，还要求你主动补一个 cookie，也可以显式写在 action 里：
+
+```toml
+cookies = { "oem.sessionid" = { from = "state", key = "oem.sessionid" } }
+```
+
+这常见于“登录响应体里给了一个 session id，但后续接口要求它出现在 cookie 里”的系统。
+
+### 5. 读取命令行参数
+
+```toml
+query = { q = { from = "param", key = "keyword" } }
+```
+
+执行时传入：
+
+```bash
+httpx --config ./config.toml --param keyword=httpx run demo search
+```
+
+也可以给参数配置默认值：
+
+```toml
+query = { page = { from = "param", key = "page", default = 1 } }
+```
+
+### 6. 显式字面量
+
+大多数情况下，直接写普通值就已经是字面量：
+
+```toml
+query = { locale = "zh-CN" }
+```
+
+如果你想在统一的 `from = ...` 写法里显式标明，也可以这样写：
+
+```toml
+headers = { X-Mode = { from = "literal", value = "agent" } }
 ```
 
 ## 登录和状态复用
@@ -200,13 +274,19 @@ headers = { Authorization = { from = "state", key = "auth.authorization" } }
 
 ## 输出格式
 
-默认输出结构化 JSON：
+默认输出响应体：
 
 ```bash
 httpx --config ./config.toml run demo me
 ```
 
-示例输出：
+如果你想拿结构化 JSON，可以显式指定：
+
+```bash
+httpx --config ./config.toml --format json run demo me
+```
+
+示例 JSON 输出：
 
 ```json
 {
@@ -234,7 +314,7 @@ httpx --config ./config.toml run demo me
 如果你只想拿原始响应体：
 
 ```bash
-httpx --config ./config.toml --format body run demo me
+httpx --config ./config.toml run demo me
 ```
 
 ## inspect 用法
@@ -254,7 +334,8 @@ httpx --config ./config.toml --reveal inspect demo me
 ## 全局参数
 
 - `--config <path>`：配置文件路径
-- `--format json|body`：输出格式，默认 `json`
+- `--format json|body`：输出格式，默认 `body`
+- `--param key=value`：给 action 传入运行时参数，可重复传入多次
 - `--timeout <duration>`：覆盖配置中的超时
 - `--state-dir <path>`：状态文件目录
 - `--reveal`：仅 `inspect` 有意义，显示真实敏感值
@@ -282,6 +363,19 @@ extract = ".body.id"
 
 ```bash
 httpx --config ./config.toml run demo user-id
+```
+
+用运行时参数调用：
+
+```toml
+[profiles.demo.actions.user]
+path = "/users"
+query = { id = { from = "param", key = "user_id" } }
+extract = ".body"
+```
+
+```bash
+httpx --config ./config.toml --param user_id=100 run demo user
 ```
 
 要求返回 201：

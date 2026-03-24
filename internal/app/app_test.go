@@ -177,6 +177,58 @@ func TestParseArgsSupportsRepeatableParams(t *testing.T) {
 	}
 }
 
+func TestParseArgsDefaultsToBodyExceptInspect(t *testing.T) {
+	t.Parallel()
+
+	runReq, err := parseArgs([]string{"run", "demo", "list"})
+	if err != nil {
+		t.Fatalf("parseArgs run failed: %v", err)
+	}
+	if runReq.Options.Format != formatBody {
+		t.Fatalf("expected run default format body, got %q", runReq.Options.Format)
+	}
+
+	inspectReq, err := parseArgs([]string{"inspect", "demo", "list"})
+	if err != nil {
+		t.Fatalf("parseArgs inspect failed: %v", err)
+	}
+	if inspectReq.Options.Format != formatJSON {
+		t.Fatalf("expected inspect default format json, got %q", inspectReq.Options.Format)
+	}
+}
+
+func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
+	t.Parallel()
+
+	req, err := parseArgs([]string{
+		"run",
+		"--format", "json",
+		"demo",
+		"--param", "user=alice",
+		"list",
+		"--timeout=5s",
+		"--state-dir", "/tmp/httpx-state",
+	})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if req.Kind != commandRun || req.Profile != "demo" || req.Action != "list" {
+		t.Fatalf("unexpected request: %#v", req)
+	}
+	if req.Options.Format != formatJSON {
+		t.Fatalf("expected json format, got %q", req.Options.Format)
+	}
+	if req.Options.Timeout != 5*time.Second {
+		t.Fatalf("expected timeout 5s, got %v", req.Options.Timeout)
+	}
+	if req.Options.StateDir != "/tmp/httpx-state" {
+		t.Fatalf("unexpected state dir: %q", req.Options.StateDir)
+	}
+	if req.Options.Params["user"] != "alice" {
+		t.Fatalf("unexpected params: %#v", req.Options.Params)
+	}
+}
+
 func TestCompileSupportsParamAndLiteralSources(t *testing.T) {
 	t.Parallel()
 
@@ -414,7 +466,7 @@ extract = ".body.value"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "login", "demo"})
+	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed: exit=%d stderr=%s stdout=%s", exitCode, loginStderr, loginStdout)
 	}
@@ -433,7 +485,7 @@ extract = ".body.value"
 		t.Fatalf("expected last_login to be set")
 	}
 
-	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "run", "demo", "data"})
+	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "--format", "json", "run", "demo", "data"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, runStderr, runStdout)
 	}
@@ -489,12 +541,12 @@ extract = ".body.ok"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	_, _, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "login", "demo"})
+	_, _, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed with exit=%d", exitCode)
 	}
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "run", "demo", "me"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "--format", "json", "run", "demo", "me"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -569,7 +621,7 @@ base_url = %q
 path = "/fail"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", t.TempDir(), "run", "demo", "fail"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", t.TempDir(), "--format", "json", "run", "demo", "fail"})
 	if exitCode != ExitAssertion {
 		t.Fatalf("expected assertion exit code, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
