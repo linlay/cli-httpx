@@ -53,7 +53,12 @@ func NewRuntime(stdout, stderr io.Writer) *Runtime {
 }
 
 func (rt *Runtime) Run(req commandRequest) int {
-	cfg, err := loadConfig(req.Options.ConfigPath)
+	configPath, err := resolveConfigPath(req.Options.ConfigDir, req.Profile)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
@@ -69,7 +74,7 @@ func (rt *Runtime) Run(req commandRequest) int {
 		return rt.writeFailure(req, nil, nil, nil, exitCode, code, err.Error())
 	}
 
-	if req.Kind == commandInspect {
+	if req.Options.Inspect {
 		if err := writeJSON(rt.stdout, compiled); err != nil {
 			fmt.Fprintf(rt.stderr, "error: %v\n", err)
 			return ExitExecution
@@ -99,30 +104,26 @@ func (rt *Runtime) Run(req commandRequest) int {
 
 func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileState) (*compiledRequest, *persistentJar, *profileState, error) {
 	actionName := req.Action
-	if req.Kind == commandLogin {
-		prof, ok := cfg.Profiles[req.Profile]
-		if !ok {
-			return nil, nil, nil, fmt.Errorf("%w: unknown profile %q", ErrConfig, req.Profile)
-		}
-		if strings.TrimSpace(prof.LoginAction) == "" {
+	if req.Action == "login" {
+		if strings.TrimSpace(cfg.LoginAction) == "" {
 			return nil, nil, nil, fmt.Errorf("%w: profile %q does not define login_action", ErrConfig, req.Profile)
 		}
-		actionName = prof.LoginAction
+		actionName = cfg.LoginAction
 	}
 
-	prof, act, err := selectAction(cfg, req.Profile, actionName)
+	act, err := selectAction(cfg, req.Profile, actionName)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	merged, err := mergeAction(actionName, prof, act, req.Options.Timeout)
+	merged, err := mergeAction(actionName, cfg, act, req.Options.Timeout)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	res := resolver{
 		state:  state,
-		reveal: req.Kind != commandInspect || req.Options.Reveal,
+		reveal: !req.Options.Inspect || req.Options.Reveal,
 		params: req.Options.Params,
 	}
 	ctx := context.Background()
@@ -137,7 +138,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		if req.Kind == commandInspect && !req.Options.Reveal && isSensitiveHeader(key) {
+		if req.Options.Inspect && !req.Options.Reveal && isSensitiveHeader(key) {
 			value = redactedValue
 		}
 		headers[key] = value
@@ -156,7 +157,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 		cookies[key] = value
 	}
 
-	baseURL, err := url.Parse(prof.BaseURL)
+	baseURL, err := url.Parse(cfg.BaseURL)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%w: parse base_url: %v", ErrConfig, err)
 	}
@@ -330,7 +331,7 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 	sort.Strings(updatedKeys)
 
 	state.Cookies = jar.Snapshot()
-	if req.Kind == commandLogin {
+	if req.Action == "login" {
 		state.LastLogin = time.Now().UTC().Format(time.RFC3339)
 	}
 	if err := saveState(req.Options.StateDir, req.Profile, state); err != nil {

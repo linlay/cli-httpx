@@ -26,11 +26,6 @@ func (d *durationValue) UnmarshalText(text []byte) error {
 }
 
 type configFile struct {
-	Version  int                `toml:"version"`
-	Profiles map[string]profile `toml:"profiles"`
-}
-
-type profile struct {
 	BaseURL     string            `toml:"base_url"`
 	LoginAction string            `toml:"login_action"`
 	Timeout     durationValue     `toml:"timeout"`
@@ -39,6 +34,7 @@ type profile struct {
 	Cookies     map[string]any    `toml:"cookies"`
 	Query       map[string]any    `toml:"query"`
 	Actions     map[string]action `toml:"actions"`
+	Version     int               `toml:"version"`
 }
 
 type action struct {
@@ -94,55 +90,46 @@ func validateConfig(cfg *configFile) error {
 	if cfg.Version != 1 {
 		return fmt.Errorf("%w: unsupported config version %d", ErrConfig, cfg.Version)
 	}
-	if len(cfg.Profiles) == 0 {
-		return fmt.Errorf("%w: no profiles configured", ErrConfig)
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		return fmt.Errorf("%w: base_url is required", ErrConfig)
 	}
-	for name, prof := range cfg.Profiles {
-		if strings.TrimSpace(prof.BaseURL) == "" {
-			return fmt.Errorf("%w: profiles.%s.base_url is required", ErrConfig, name)
+	if len(cfg.Actions) == 0 {
+		return fmt.Errorf("%w: actions is required", ErrConfig)
+	}
+	for actionName, act := range cfg.Actions {
+		if strings.TrimSpace(act.Path) == "" {
+			return fmt.Errorf("%w: actions.%s.path is required", ErrConfig, actionName)
 		}
-		if len(prof.Actions) == 0 {
-			return fmt.Errorf("%w: profiles.%s.actions is required", ErrConfig, name)
+		if act.Body != nil && len(act.Form) > 0 {
+			return fmt.Errorf("%w: actions.%s cannot set both body and form", ErrConfig, actionName)
 		}
-		for actionName, act := range prof.Actions {
-			if strings.TrimSpace(act.Path) == "" {
-				return fmt.Errorf("%w: profiles.%s.actions.%s.path is required", ErrConfig, name, actionName)
-			}
-			if act.Body != nil && len(act.Form) > 0 {
-				return fmt.Errorf("%w: profiles.%s.actions.%s cannot set both body and form", ErrConfig, name, actionName)
-			}
-			if _, err := normalizeExpectStatus(act.ExpectStatus); err != nil {
-				return fmt.Errorf("%w: profiles.%s.actions.%s.expect_status: %v", ErrConfig, name, actionName, err)
-			}
+		if _, err := normalizeExpectStatus(act.ExpectStatus); err != nil {
+			return fmt.Errorf("%w: actions.%s.expect_status: %v", ErrConfig, actionName, err)
 		}
-		if prof.LoginAction != "" {
-			if _, ok := prof.Actions[prof.LoginAction]; !ok {
-				return fmt.Errorf("%w: profiles.%s.login_action references missing action %q", ErrConfig, name, prof.LoginAction)
-			}
+	}
+	if cfg.LoginAction != "" {
+		if _, ok := cfg.Actions[cfg.LoginAction]; !ok {
+			return fmt.Errorf("%w: login_action references missing action %q", ErrConfig, cfg.LoginAction)
 		}
 	}
 	return nil
 }
 
-func selectAction(cfg *configFile, profileName, actionName string) (profile, action, error) {
-	prof, ok := cfg.Profiles[profileName]
+func selectAction(cfg *configFile, profileName, actionName string) (action, error) {
+	act, ok := cfg.Actions[actionName]
 	if !ok {
-		return profile{}, action{}, fmt.Errorf("%w: unknown profile %q", ErrConfig, profileName)
+		return action{}, fmt.Errorf("%w: unknown action %q for profile %q", ErrConfig, actionName, profileName)
 	}
-	act, ok := prof.Actions[actionName]
-	if !ok {
-		return profile{}, action{}, fmt.Errorf("%w: unknown action %q for profile %q", ErrConfig, actionName, profileName)
-	}
-	return prof, act, nil
+	return act, nil
 }
 
-func mergeAction(actionName string, prof profile, act action, timeoutOverride time.Duration) (mergedAction, error) {
+func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride time.Duration) (mergedAction, error) {
 	expectStatus, err := normalizeExpectStatus(act.ExpectStatus)
 	if err != nil {
 		return mergedAction{}, fmt.Errorf("%w: %v", ErrConfig, err)
 	}
 
-	timeout := prof.Timeout.Duration
+	timeout := cfg.Timeout.Duration
 	if timeout == 0 {
 		timeout = defaultRequestTimeout
 	}
@@ -153,7 +140,7 @@ func mergeAction(actionName string, prof profile, act action, timeoutOverride ti
 		timeout = timeoutOverride
 	}
 
-	retries := prof.Retries
+	retries := cfg.Retries
 	if act.Retries != nil {
 		retries = *act.Retries
 	}
@@ -176,9 +163,9 @@ func mergeAction(actionName string, prof profile, act action, timeoutOverride ti
 		Path:         act.Path,
 		Timeout:      timeout,
 		Retries:      retries,
-		Headers:      mergeMap(prof.Headers, act.Headers),
-		Cookies:      mergeMap(prof.Cookies, act.Cookies),
-		Query:        mergeMap(prof.Query, act.Query),
+		Headers:      mergeMap(cfg.Headers, act.Headers),
+		Cookies:      mergeMap(cfg.Cookies, act.Cookies),
+		Query:        mergeMap(cfg.Query, act.Query),
 		Body:         act.Body,
 		Form:         copyMap(act.Form),
 		ExpectStatus: expectStatus,

@@ -10,24 +10,16 @@ const (
 )
 
 type globalOptions struct {
-	ConfigPath string
-	Format     outputFormat
-	Timeout    time.Duration
-	StateDir   string
-	Reveal     bool
-	Params     map[string]string
+	ConfigDir string
+	Format    outputFormat
+	Timeout   time.Duration
+	StateDir  string
+	Inspect   bool
+	Reveal    bool
+	Params    map[string]string
 }
 
-type commandKind string
-
-const (
-	commandRun     commandKind = "run"
-	commandLogin   commandKind = "login"
-	commandInspect commandKind = "inspect"
-)
-
 type commandRequest struct {
-	Kind    commandKind
 	Profile string
 	Action  string
 	Options globalOptions

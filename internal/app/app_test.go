@@ -20,13 +20,33 @@ func TestLoadConfigRejectsUnknownField(t *testing.T) {
 
 	configPath := writeConfig(t, `
 version = 1
+base_url = "https://example.com"
+
+[actions.get]
+path = "/"
+bogus = true
+`)
+
+	_, err := loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected config error")
+	}
+	if !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected ErrConfig, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsLegacyProfilesWrapper(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
 
 [profiles.demo]
 base_url = "https://example.com"
 
 [profiles.demo.actions.get]
 path = "/"
-bogus = true
 `)
 
 	_, err := loadConfig(configPath)
@@ -46,21 +66,19 @@ func TestCompileMergesDefaultsActionAndCLIOverride(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
 timeout = "2s"
 retries = 1
 
-[profiles.demo.headers]
+[headers]
 X-Base = "base"
 X-Shared = "profile"
 
-[profiles.demo.query]
+[query]
 scope = "base"
 region = "cn"
 
-[profiles.demo.actions.info]
+[actions.info]
 path = "/v1/info"
 timeout = "1s"
 retries = 2
@@ -76,14 +94,12 @@ query = { scope = "action" }
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 
 	req := commandRequest{
-		Kind:    commandRun,
 		Profile: "demo",
 		Action:  "info",
 		Options: globalOptions{
-			ConfigPath: configPath,
-			StateDir:   t.TempDir(),
-			Timeout:    3 * time.Second,
-			Format:     formatJSON,
+			StateDir: t.TempDir(),
+			Timeout:  3 * time.Second,
+			Format:   formatJSON,
 		},
 	}
 
@@ -167,7 +183,7 @@ func TestParseArgsSupportsRepeatableParams(t *testing.T) {
 	req, err := parseArgs([]string{
 		"--param", "user=alice",
 		"--param", "page=2",
-		"run", "demo", "list",
+		"demo", "list",
 	})
 	if err != nil {
 		t.Fatalf("parseArgs failed: %v", err)
@@ -180,7 +196,7 @@ func TestParseArgsSupportsRepeatableParams(t *testing.T) {
 func TestParseArgsDefaultsToBodyExceptInspect(t *testing.T) {
 	t.Parallel()
 
-	runReq, err := parseArgs([]string{"run", "demo", "list"})
+	runReq, err := parseArgs([]string{"demo", "list"})
 	if err != nil {
 		t.Fatalf("parseArgs run failed: %v", err)
 	}
@@ -188,7 +204,7 @@ func TestParseArgsDefaultsToBodyExceptInspect(t *testing.T) {
 		t.Fatalf("expected run default format body, got %q", runReq.Options.Format)
 	}
 
-	inspectReq, err := parseArgs([]string{"inspect", "demo", "list"})
+	inspectReq, err := parseArgs([]string{"--inspect", "demo", "list"})
 	if err != nil {
 		t.Fatalf("parseArgs inspect failed: %v", err)
 	}
@@ -201,18 +217,19 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	t.Parallel()
 
 	req, err := parseArgs([]string{
-		"run",
-		"--format", "json",
 		"demo",
+		"--format", "json",
+		"--inspect",
 		"--param", "user=alice",
 		"list",
 		"--timeout=5s",
 		"--state-dir", "/tmp/httpx-state",
+		"--config", "/tmp/httpx-config",
 	})
 	if err != nil {
 		t.Fatalf("parseArgs failed: %v", err)
 	}
-	if req.Kind != commandRun || req.Profile != "demo" || req.Action != "list" {
+	if req.Profile != "demo" || req.Action != "list" {
 		t.Fatalf("unexpected request: %#v", req)
 	}
 	if req.Options.Format != formatJSON {
@@ -224,8 +241,46 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	if req.Options.StateDir != "/tmp/httpx-state" {
 		t.Fatalf("unexpected state dir: %q", req.Options.StateDir)
 	}
+	if req.Options.ConfigDir != "/tmp/httpx-config" {
+		t.Fatalf("unexpected config dir: %q", req.Options.ConfigDir)
+	}
+	if !req.Options.Inspect {
+		t.Fatalf("expected inspect mode")
+	}
 	if req.Options.Params["user"] != "alice" {
 		t.Fatalf("unexpected params: %#v", req.Options.Params)
+	}
+}
+
+func TestParseArgsRejectsInspectBodyFormat(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseArgs([]string{"--inspect", "--format", "body", "demo", "list"}); err == nil {
+		t.Fatal("expected inspect/body parse error")
+	}
+}
+
+func TestParseArgsRejectsLegacyCommands(t *testing.T) {
+	t.Parallel()
+
+	for _, args := range [][]string{
+		{"run", "demo", "list"},
+		{"login", "demo"},
+		{"inspect", "demo", "list"},
+	} {
+		if _, err := parseArgs(args); err == nil {
+			t.Fatalf("expected parse error for legacy args %#v", args)
+		}
+	}
+}
+
+func TestResolveConfigPathRejectsFile(t *testing.T) {
+	t.Parallel()
+
+	filePath := writeConfig(t, "version = 1\nbase_url = \"https://example.com\"\n[actions.me]\npath = \"/me\"\n")
+	_, err := resolveConfigPath(filePath, "demo")
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config dir error, got %v", err)
 	}
 }
 
@@ -237,11 +292,9 @@ func TestCompileSupportsParamAndLiteralSources(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
 
-[profiles.demo.actions.search]
+[actions.search]
 path = "/search"
 headers = { X-Mode = { from = "literal", value = "agent" } }
 query = { q = { from = "param", key = "query" }, page = { from = "param", key = "page", default = 1 } }
@@ -254,13 +307,11 @@ body = { keyword = { from = "param", key = "query" }, source = { from = "literal
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Kind:    commandRun,
 		Profile: "demo",
 		Action:  "search",
 		Options: globalOptions{
-			ConfigPath: configPath,
-			StateDir:   t.TempDir(),
-			Format:     formatJSON,
+			StateDir: t.TempDir(),
+			Format:   formatJSON,
 			Params: map[string]string{
 				"query": "golang",
 			},
@@ -294,12 +345,10 @@ func TestCompileSupportsCookies(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
 cookies = { locale = "zh-CN" }
 
-[profiles.demo.actions.me]
+[actions.me]
 path = "/me"
 cookies = { session = { from = "state", key = "auth.session" }, mode = { from = "literal", value = "agent" } }
 `, server.URL))
@@ -310,13 +359,11 @@ cookies = { session = { from = "state", key = "auth.session" }, mode = { from = 
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Kind:    commandRun,
 		Profile: "demo",
 		Action:  "me",
 		Options: globalOptions{
-			ConfigPath: configPath,
-			StateDir:   t.TempDir(),
-			Format:     formatJSON,
+			StateDir: t.TempDir(),
+			Format:   formatJSON,
 		},
 	}
 
@@ -337,11 +384,9 @@ func TestCompileFormEncodesNestedObjectsAsJSONString(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
 
-[profiles.demo.actions.login]
+[actions.submit]
 method = "POST"
 path = "/login"
 form = { data = { UserId = "alice", Password = "secret", SystemType = "100", ClientType = "2" } }
@@ -353,13 +398,11 @@ form = { data = { UserId = "alice", Password = "secret", SystemType = "100", Cli
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Kind:    commandRun,
 		Profile: "demo",
-		Action:  "login",
+		Action:  "submit",
 		Options: globalOptions{
-			ConfigPath: configPath,
-			StateDir:   t.TempDir(),
-			Format:     formatJSON,
+			StateDir: t.TempDir(),
+			Format:   formatJSON,
 		},
 	}
 
@@ -411,6 +454,37 @@ func TestResolverReportsMissingEnvAndShellTimeout(t *testing.T) {
 	}
 }
 
+func TestRunUsesDefaultProfileConfigPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("pong"))
+	}))
+	t.Cleanup(server.Close)
+
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	configDir := filepath.Join(configRoot, "httpx")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "demo.toml"), []byte(strings.TrimSpace(fmt.Sprintf(`
+version = 1
+base_url = %q
+
+[actions.ping]
+path = "/ping"
+`, server.URL))+"\n"), 0o600); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+
+	stdout, stderr, exitCode := runMain(t, []string{"demo", "ping"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if stdout != "pong" {
+		t.Fatalf("unexpected body output: %q", stdout)
+	}
+}
+
 func TestLoginPersistsStateAndRunReusesCookieAndToken(t *testing.T) {
 	t.Setenv("HTTPX_USER", "alice")
 	t.Setenv("HTTPX_PASS", "secret")
@@ -446,27 +520,25 @@ func TestLoginPersistsStateAndRunReusesCookieAndToken(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configPath := writeConfig(t, fmt.Sprintf(`
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
-login_action = "login"
+login_action = "login_request"
 
-[profiles.demo.actions.login]
+[actions.login_request]
 method = "POST"
 path = "/login"
 form = { username = { from = "env", key = "HTTPX_USER" }, password = { from = "env", key = "HTTPX_PASS" } }
 save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 
-[profiles.demo.actions.data]
+[actions.data]
 path = "/data"
 headers = { Authorization = { from = "state", key = "auth.authorization" } }
 extract = ".body.value"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "--format", "json", "login", "demo"})
+	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", stateDir, "--format", "json", "demo", "login"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed: exit=%d stderr=%s stdout=%s", exitCode, loginStderr, loginStdout)
 	}
@@ -485,7 +557,7 @@ extract = ".body.value"
 		t.Fatalf("expected last_login to be set")
 	}
 
-	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "--format", "json", "run", "demo", "data"})
+	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", stateDir, "--format", "json", "demo", "data"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, runStderr, runStdout)
 	}
@@ -496,6 +568,9 @@ extract = ".body.value"
 	}
 	if !env.OK || env.Status != 200 {
 		t.Fatalf("unexpected envelope: %#v", env)
+	}
+	if env.Action != "data" {
+		t.Fatalf("unexpected action: %#v", env.Action)
 	}
 	if value, ok := env.Extract.(float64); !ok || value != 42 {
 		t.Fatalf("unexpected extract: %#v", env.Extract)
@@ -522,31 +597,29 @@ func TestRunSupportsExplicitCookiesFromState(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configPath := writeConfig(t, fmt.Sprintf(`
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
-login_action = "login"
+login_action = "login_request"
 
-[profiles.demo.actions.login]
+[actions.login_request]
 method = "POST"
 path = "/login"
 save = { "oem.sessionid" = ".body.session_id" }
 
-[profiles.demo.actions.me]
+[actions.me]
 path = "/me"
 cookies = { "oem.sessionid" = { from = "state", key = "oem.sessionid" } }
 extract = ".body.ok"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	_, _, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "--format", "json", "login", "demo"})
+	_, _, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", stateDir, "--format", "json", "demo", "login"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed with exit=%d", exitCode)
 	}
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", stateDir, "--format", "json", "run", "demo", "me"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", stateDir, "--format", "json", "demo", "me"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -566,13 +639,11 @@ func TestInspectRedactsDynamicValues(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	t.Cleanup(server.Close)
 
-	configPath := writeConfig(t, fmt.Sprintf(`
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
 
-[profiles.demo.actions.secret]
+[actions.secret]
 method = "POST"
 path = "/secret"
 headers = { Authorization = { from = "env", key = "HTTPX_SECRET" } }
@@ -580,7 +651,7 @@ query = { token = { from = "env", key = "HTTPX_SECRET" } }
 body = { nested = { from = "env", key = "HTTPX_SECRET" } }
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "inspect", "demo", "secret"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--inspect", "demo", "secret"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -611,17 +682,15 @@ func TestAssertionFailureReturnsStructuredEnvelope(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configPath := writeConfig(t, fmt.Sprintf(`
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
 
-[profiles.demo.actions.fail]
+[actions.fail]
 path = "/fail"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", t.TempDir(), "--format", "json", "run", "demo", "fail"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", t.TempDir(), "--format", "json", "demo", "fail"})
 	if exitCode != ExitAssertion {
 		t.Fatalf("expected assertion exit code, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -646,17 +715,15 @@ func TestBodyFormatOutputsRawBody(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configPath := writeConfig(t, fmt.Sprintf(`
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
-
-[profiles.demo]
 base_url = %q
 
-[profiles.demo.actions.ping]
+[actions.ping]
 path = "/ping"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configPath, "--state-dir", t.TempDir(), "--format", "body", "run", "demo", "ping"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", t.TempDir(), "--format", "body", "demo", "ping"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -673,6 +740,17 @@ func writeConfig(t *testing.T, content string) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+func writeProfileConfig(t *testing.T, profile, content string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, profile+".toml")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(content)+"\n"), 0o600); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+	return dir
 }
 
 func runMain(t *testing.T, args []string) (string, string, int) {

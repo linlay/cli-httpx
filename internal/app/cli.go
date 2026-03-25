@@ -51,9 +51,9 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 
 func parseArgs(args []string) (commandRequest, error) {
 	opts := globalOptions{
-		ConfigPath: defaultConfigPath(),
-		Format:     formatBody,
-		StateDir:   defaultStateDir(),
+		ConfigDir: defaultConfigDir(),
+		Format:    formatBody,
+		StateDir:  defaultStateDir(),
 	}
 	rest, formatSet, err := parseGlobalArgs(args, &opts)
 	if err != nil {
@@ -62,37 +62,24 @@ func parseArgs(args []string) (commandRequest, error) {
 	if len(rest) == 0 {
 		return commandRequest{}, flag.ErrHelp
 	}
-
-	req := commandRequest{Options: opts}
+	if len(rest) != 2 {
+		return commandRequest{}, fmt.Errorf("usage: httpx [global flags] [--inspect] <profile> <action>")
+	}
 	switch rest[0] {
-	case string(commandRun):
-		if len(rest) != 3 {
-			return commandRequest{}, fmt.Errorf("usage: httpx run <profile> <action>")
-		}
-		req.Kind = commandRun
-		req.Profile = rest[1]
-		req.Action = rest[2]
-	case string(commandLogin):
-		if len(rest) != 2 {
-			return commandRequest{}, fmt.Errorf("usage: httpx login <profile>")
-		}
-		req.Kind = commandLogin
-		req.Profile = rest[1]
-	case string(commandInspect):
-		if len(rest) != 3 {
-			return commandRequest{}, fmt.Errorf("usage: httpx inspect <profile> <action>")
-		}
-		req.Kind = commandInspect
-		req.Profile = rest[1]
-		req.Action = rest[2]
-	default:
-		return commandRequest{}, fmt.Errorf("unknown command %q", rest[0])
+	case "run", "login", "inspect":
+		return commandRequest{}, fmt.Errorf("usage: httpx [global flags] [--inspect] <profile> <action>")
 	}
 
-	if req.Kind == commandInspect && !formatSet {
+	req := commandRequest{
+		Profile: rest[0],
+		Action:  rest[1],
+		Options: opts,
+	}
+
+	if req.Options.Inspect && !formatSet {
 		req.Options.Format = formatJSON
 	}
-	if req.Kind == commandInspect && formatSet && opts.Format == formatBody {
+	if req.Options.Inspect && formatSet && opts.Format == formatBody {
 		return commandRequest{}, fmt.Errorf("--format body is not supported with inspect")
 	}
 	return req, nil
@@ -109,15 +96,17 @@ func parseGlobalArgs(args []string, opts *globalOptions) ([]string, bool, error)
 			return nil, false, flag.ErrHelp
 		case arg == "--reveal":
 			opts.Reveal = true
+		case arg == "--inspect":
+			opts.Inspect = true
 		case arg == "--config":
 			value, next, err := requireFlagValue(args, i, "--config")
 			if err != nil {
 				return nil, false, err
 			}
-			opts.ConfigPath = value
+			opts.ConfigDir = value
 			i = next
 		case strings.HasPrefix(arg, "--config="):
-			opts.ConfigPath = strings.TrimPrefix(arg, "--config=")
+			opts.ConfigDir = strings.TrimPrefix(arg, "--config=")
 		case arg == "--format":
 			value, next, err := requireFlagValue(args, i, "--format")
 			if err != nil {
@@ -204,16 +193,15 @@ func setFormat(opts *globalOptions, value string) error {
 func usageText() string {
 	lines := []string{
 		"Usage:",
-		"  httpx [global flags] run <profile> <action>",
-		"  httpx [global flags] login <profile>",
-		"  httpx [global flags] inspect <profile> <action>",
+		"  httpx [global flags] [--inspect] <profile> <action>",
 		"",
 		"Global flags (can appear before or after the command):",
-		"  --config <path>",
+		"  --config <dir>",
 		"  --format json|body",
 		"  --timeout <duration>",
 		"  --state-dir <path>",
 		"  --param key=value",
+		"  --inspect",
 		"  --reveal",
 	}
 	return strings.Join(lines, "\n") + "\n"

@@ -1,38 +1,30 @@
 version = 1
-
-# 一个 profile 代表一个网站或系统。
-[profiles.demo]
 base_url = "https://api.example.com"
 login_action = "login"
 timeout = "10s"
 retries = 1
 
-# 这些 header 会应用到当前 profile 的所有 action。
-[profiles.demo.headers]
+[headers]
 Accept = "application/json"
 User-Agent = "httpx/1.0"
 
-# 登录动作：读取环境变量，提交表单，并把响应里的 token 保存到本地状态。
-[profiles.demo.actions.login]
+[actions.login]
 method = "POST"
 path = "/session"
 form = { username = { from = "env", key = "DEMO_USER" }, password = { from = "env", key = "DEMO_PASS" } }
 save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 
-# 普通接口动作：复用登录时保存的 token。
-[profiles.demo.actions.me]
+[actions.me]
 path = "/me"
 headers = { Authorization = { from = "state", key = "auth.authorization" } }
 extract = ".body"
 
-# 从文件读取查询参数。
-[profiles.demo.actions.search]
+[actions.search]
 path = "/search"
 query = { q = "httpx", api_key = { from = "file", path = "~/.secrets/demo-api-key", trim = true } }
 extract = ".body.items[]?.id"
 
-# 也可以执行 shell 命令获取动态值。
-[profiles.demo.actions.repo]
+[actions.repo]
 path = "/repo"
 headers = { Authorization = { from = "shell", cmd = "pass demo/token", trim = true } }
 extract = ".body"
