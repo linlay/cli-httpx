@@ -272,7 +272,21 @@ CLI 有两种主要输出模式：
 - 文件名：`httpx_<version>_<goos>_<goarch>.tar.gz`
 - 额外生成：`httpx_<version>_checksums.txt`
 
-这个脚本只负责本地构建和校验文件准备，不负责自动上传 GitHub Release。
+分发约定：
+
+- 公网根目录：`https://cligrep.com/cli-releases/`
+- httpx 固定版本路径：`/cli-releases/httpx/<version>/`
+- httpx 稳定入口路径：`/cli-releases/httpx/latest/`
+- 服务器落盘目录：`/docker/cli-releases/httpx/<version>/` 与 `/docker/cli-releases/httpx/latest/`
+- `latest/` 下只放稳定文件名软链接与 `checksums.txt`
+
+发布时保持以下规则：
+
+- `vX.Y.Z/` 一旦上传后不覆盖、不改名
+- 版本目录保留构建脚本生成的真实文件名
+- `latest/` 是唯一允许更新的入口
+- `latest/checksums.txt` 必须校验 `latest/` 目录下的稳定文件名，而不是版本目录原始文件名
+- 根目录不直接放散落 bundle，所有文件都必须归属到某个 CLI 子目录
 
 ## 仓库约定
 

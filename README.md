@@ -195,7 +195,54 @@ cd dist/v0.1.0
 shasum -a 256 -c httpx_v0.1.0_checksums.txt
 ```
 
-5. 在 GitHub 创建同名 Release，并手动上传这 5 个文件。
+5. 上传到 `cligrep.com` 的 CLI 发布目录：
+
+```bash
+ssh singapore02 'mkdir -p /docker/cli-releases/httpx/v0.1.0 /docker/cli-releases/httpx/latest'
+scp \
+  dist/v0.1.0/httpx_v0.1.0_darwin_amd64.tar.gz \
+  dist/v0.1.0/httpx_v0.1.0_darwin_arm64.tar.gz \
+  dist/v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz \
+  dist/v0.1.0/httpx_v0.1.0_linux_arm64.tar.gz \
+  dist/v0.1.0/httpx_v0.1.0_checksums.txt \
+  singapore02:/docker/cli-releases/httpx/v0.1.0/
+```
+
+6. 在服务器上更新稳定入口：
+
+```bash
+ssh singapore02 '
+  set -euo pipefail
+  cd /docker/cli-releases/httpx
+  mkdir -p latest
+  ln -sfn ../v0.1.0/httpx_v0.1.0_darwin_amd64.tar.gz latest/httpx_darwin_amd64.tar.gz
+  ln -sfn ../v0.1.0/httpx_v0.1.0_darwin_arm64.tar.gz latest/httpx_darwin_arm64.tar.gz
+  ln -sfn ../v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz latest/httpx_linux_amd64.tar.gz
+  ln -sfn ../v0.1.0/httpx_v0.1.0_linux_arm64.tar.gz latest/httpx_linux_arm64.tar.gz
+  (
+    cd latest
+    shasum -a 256 \
+      httpx_darwin_amd64.tar.gz \
+      httpx_darwin_arm64.tar.gz \
+      httpx_linux_amd64.tar.gz \
+      httpx_linux_arm64.tar.gz \
+      > checksums.txt
+  )
+'
+```
+
+7. 验证公网下载地址：
+
+```bash
+curl -I https://cligrep.com/cli-releases/httpx/v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz
+curl -I https://cligrep.com/cli-releases/httpx/latest/httpx_linux_amd64.tar.gz
+```
+
+当前分发约定：
+
+- 固定版本：`https://cligrep.com/cli-releases/httpx/vX.Y.Z/...`
+- 稳定入口：`https://cligrep.com/cli-releases/httpx/latest/...`
+- `latest/checksums.txt` 校验的是 `latest/` 目录下的稳定文件名
 
 ## 常见问题
 
