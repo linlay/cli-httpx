@@ -1,4 +1,4 @@
-module github.com/zengnianmei/httpx
+module github.com/linlay/cli-httpx
 
 go 1.26
 

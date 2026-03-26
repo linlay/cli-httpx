@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/linlay/cli-httpx/internal/buildinfo"
 )
 
 func TestLoadConfigRejectsUnknownField(t *testing.T) {
@@ -271,6 +273,22 @@ func TestParseArgsRejectsLegacyCommands(t *testing.T) {
 		if _, err := parseArgs(args); err == nil {
 			t.Fatalf("expected parse error for legacy args %#v", args)
 		}
+	}
+}
+
+func TestParseArgsRejectsVersionAsProfile(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseArgs([]string{"version", "list"}); err == nil {
+		t.Fatal("expected parse error for reserved version command")
+	}
+}
+
+func TestParseArgsRejectsVersionFlagMixedWithCommand(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseArgs([]string{"--version", "demo", "list"}); err == nil {
+		t.Fatal("expected parse error for mixed --version")
 	}
 }
 
@@ -729,6 +747,60 @@ path = "/ping"
 	}
 	if stdout != "pong" {
 		t.Fatalf("unexpected body output: %q", stdout)
+	}
+}
+
+func TestMainPrintsVersionCommand(t *testing.T) {
+	t.Parallel()
+
+	oldVersion := buildinfo.Version
+	oldCommit := buildinfo.Commit
+	oldBuildTime := buildinfo.BuildTime
+	buildinfo.Version = "v0.1.0"
+	buildinfo.Commit = "abc1234"
+	buildinfo.BuildTime = "2026-03-26T12:00:00Z"
+	t.Cleanup(func() {
+		buildinfo.Version = oldVersion
+		buildinfo.Commit = oldCommit
+		buildinfo.BuildTime = oldBuildTime
+	})
+
+	stdout, stderr, exitCode := runMain(t, []string{"version"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success exit code, got %d", exitCode)
+	}
+	if strings.TrimSpace(stdout) != "httpx v0.1.0 (commit abc1234, built 2026-03-26T12:00:00Z)" {
+		t.Fatalf("unexpected version output: %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestMainPrintsVersionFlag(t *testing.T) {
+	t.Parallel()
+
+	oldVersion := buildinfo.Version
+	oldCommit := buildinfo.Commit
+	oldBuildTime := buildinfo.BuildTime
+	buildinfo.Version = "v0.1.0"
+	buildinfo.Commit = "abc1234"
+	buildinfo.BuildTime = "2026-03-26T12:00:00Z"
+	t.Cleanup(func() {
+		buildinfo.Version = oldVersion
+		buildinfo.Commit = oldCommit
+		buildinfo.BuildTime = oldBuildTime
+	})
+
+	stdout, stderr, exitCode := runMain(t, []string{"--version"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success exit code, got %d", exitCode)
+	}
+	if strings.TrimSpace(stdout) != "httpx v0.1.0 (commit abc1234, built 2026-03-26T12:00:00Z)" {
+		t.Fatalf("unexpected --version output: %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %q", stderr)
 	}
 }
 

@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/zengnianmei/httpx/internal/app"
+	"github.com/linlay/cli-httpx/internal/app"
 )
 
 func main() {

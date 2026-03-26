@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/linlay/cli-httpx/internal/buildinfo"
 )
 
 type paramValues map[string]string
@@ -35,6 +37,11 @@ func (p *paramValues) Set(raw string) error {
 }
 
 func Main(args []string, stdout io.Writer, stderr io.Writer) int {
+	if isVersionCommand(args) {
+		fmt.Fprintln(stdout, buildinfo.Summary())
+		return ExitSuccess
+	}
+
 	req, err := parseArgs(args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -66,7 +73,7 @@ func parseArgs(args []string) (commandRequest, error) {
 		return commandRequest{}, fmt.Errorf("usage: httpx [global flags] [--inspect] <profile> <action>")
 	}
 	switch rest[0] {
-	case "run", "login", "inspect":
+	case "run", "login", "inspect", "version":
 		return commandRequest{}, fmt.Errorf("usage: httpx [global flags] [--inspect] <profile> <action>")
 	}
 
@@ -83,6 +90,10 @@ func parseArgs(args []string) (commandRequest, error) {
 		return commandRequest{}, fmt.Errorf("--format body is not supported with inspect")
 	}
 	return req, nil
+}
+
+func isVersionCommand(args []string) bool {
+	return len(args) == 1 && (args[0] == "version" || args[0] == "--version")
 }
 
 func parseGlobalArgs(args []string, opts *globalOptions) ([]string, bool, error) {
@@ -194,6 +205,8 @@ func usageText() string {
 	lines := []string{
 		"Usage:",
 		"  httpx [global flags] [--inspect] <profile> <action>",
+		"  httpx version",
+		"  httpx --version",
 		"",
 		"Global flags (can appear before or after the command):",
 		"  --config <dir>",
@@ -203,6 +216,9 @@ func usageText() string {
 		"  --param key=value",
 		"  --inspect",
 		"  --reveal",
+		"",
+		"Notes:",
+		"  version = 1 inside TOML config files is the config schema version, not the CLI release version.",
 	}
 	return strings.Join(lines, "\n") + "\n"
 }

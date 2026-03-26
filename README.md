@@ -18,16 +18,33 @@ httpx --param key=value <profile> <action>
 
 ## 安装
 
+如果你是普通使用者，优先从 GitHub Releases 下载对应平台压缩包：
+
+- macOS Apple Silicon：`httpx_vX.Y.Z_darwin_arm64.tar.gz`
+- macOS Intel：`httpx_vX.Y.Z_darwin_amd64.tar.gz`
+- Linux ARM64：`httpx_vX.Y.Z_linux_arm64.tar.gz`
+- Linux AMD64：`httpx_vX.Y.Z_linux_amd64.tar.gz`
+
+解压后可以先确认版本信息：
+
+```bash
+tar -xzf httpx_v0.1.0_darwin_arm64.tar.gz
+./httpx version
+./httpx --version
+```
+
+如果你想从源码自行编译，再看下面这节。
+
 在当前仓库里构建：
 
 ```bash
-go build .
+go build -o ./httpx ./cmd/httpx
 ```
 
 安装到本机：
 
 ```bash
-go install github.com/zengnianmei/httpx@latest
+go install github.com/linlay/cli-httpx/cmd/httpx@latest
 ```
 
 ## 核心命令
@@ -36,11 +53,14 @@ go install github.com/zengnianmei/httpx@latest
 httpx <profile> login
 httpx <profile> me
 httpx --inspect <profile> me
+httpx version
+httpx --version
 ```
 
 - `login`：保留动作名，会按配置中的 `login_action` 执行真实登录动作，并持久化 cookie 和状态
 - 其他 action：执行配置里的普通请求动作
 - `--inspect`：只展示最终请求，不真正发请求，默认会脱敏
+- `version` / `--version`：查看当前二进制里嵌入的版本、commit 和构建时间
 
 全局参数可以放在命令前，也可以放在命令后。例如下面两种写法都可以：
 
@@ -112,6 +132,8 @@ timeout = "10s"
 retries = 1
 ```
 
+这里的 `version = 1` 表示配置格式版本，不是 CLI 的发布版本号。CLI 发布版本来自 Git tag，并在构建时嵌入到二进制里。
+
 常用字段：
 
 - `base_url`：接口基础地址
@@ -153,6 +175,61 @@ action 常用字段：
 - `save`：从响应里提取值并保存到本地状态
 
 `form` 里的值默认按普通表单字段发送；如果某个表单值本身是对象或数组，`httpx` 会先把它编码成 JSON 字符串，再作为该字段的值发送。
+
+## 手工发布 v0.1.0
+
+首个版本建议按 Git tag 作为正式版本号来源，例如 `v0.1.0`。
+
+1. 确认代码和文档已经提交完成。
+2. 运行测试：
+
+```bash
+go test ./...
+```
+
+3. 创建并推送 tag：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+4. 在 tag 对应提交上本地打包：
+
+```bash
+scripts/release/build.sh v0.1.0
+```
+
+如果网络不稳定，可以显式带上代理环境变量：
+
+```bash
+GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn scripts/release/build.sh v0.1.0
+```
+
+打包完成后会生成：
+
+- `dist/v0.1.0/httpx_v0.1.0_darwin_amd64.tar.gz`
+- `dist/v0.1.0/httpx_v0.1.0_darwin_arm64.tar.gz`
+- `dist/v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz`
+- `dist/v0.1.0/httpx_v0.1.0_linux_arm64.tar.gz`
+- `dist/v0.1.0/httpx_v0.1.0_checksums.txt`
+
+5. 校验压缩包摘要：
+
+```bash
+cd dist/v0.1.0
+shasum -a 256 -c httpx_v0.1.0_checksums.txt
+```
+
+6. 在 GitHub 创建 `v0.1.0` Release，并手动上传这 5 个文件。
+
+建议 Release 正文至少包含：
+
+- 版本亮点摘要
+- 支持的平台：macOS/Linux, amd64/arm64
+- `checksums` 文件可用于下载后校验
+
+如果准备公开发布，建议在首发前补上 `LICENSE` 文件，打包脚本会在存在时自动把它放进压缩包。
 
 ## 动态取值
 
@@ -273,4 +350,4 @@ httpx --config ./examples --reveal --inspect demo me
 
 ## 示例
 
-完整示例见 [examples/config.toml](/Users/zengnianmei/workspace/source/httpx/examples/config.toml) 和 [examples/gtht.toml](/Users/zengnianmei/workspace/source/httpx/examples/gtht.toml)。
+完整示例见 [examples/config.toml](./examples/config.toml)。
