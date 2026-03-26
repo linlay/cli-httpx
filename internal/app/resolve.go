@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -153,11 +154,11 @@ func rejectUnknownSourceKeys(input map[string]any, allowed ...string) error {
 	return nil
 }
 
-func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (string, error) {
+func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, error) {
 	if !r.reveal && spec.From != "literal" {
 		if spec.From == "param" {
 			if _, ok := r.params[spec.Key]; !ok && spec.Default != nil {
-				return stringifyScalar(spec.Default)
+				return maybeTrimValue(spec.Default, spec.Trim), nil
 			}
 		}
 		return redactedValue, nil
@@ -165,33 +166,37 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (string, e
 
 	switch spec.From {
 	case "literal":
-		return stringifyScalar(spec.Value)
+		return spec.Value, nil
 	case "param":
 		if value, ok := r.params[spec.Key]; ok {
-			return maybeTrim(value, spec.Trim), nil
+			value = maybeTrim(value, spec.Trim)
+			if spec.Default != nil {
+				coerced, err := coerceToSampleType(value, spec.Default)
+				if err != nil {
+					return nil, fmt.Errorf("%w: parameter %q: %v", ErrExecution, spec.Key, err)
+				}
+				return coerced, nil
+			}
+			return value, nil
 		}
 		if spec.Default != nil {
-			value, err := stringifyScalar(spec.Default)
-			if err != nil {
-				return "", err
-			}
-			return maybeTrim(value, spec.Trim), nil
+			return maybeTrimValue(spec.Default, spec.Trim), nil
 		}
-		return "", fmt.Errorf("%w: parameter %q not provided", ErrExecution, spec.Key)
+		return nil, fmt.Errorf("%w: parameter %q not provided", ErrExecution, spec.Key)
 	case "env":
 		value, ok := os.LookupEnv(spec.Key)
 		if !ok {
-			return "", fmt.Errorf("%w: environment variable %q not set", ErrExecution, spec.Key)
+			return nil, fmt.Errorf("%w: environment variable %q not set", ErrExecution, spec.Key)
 		}
 		return maybeTrim(value, spec.Trim), nil
 	case "file":
 		path, err := expandPath(spec.Path)
 		if err != nil {
-			return "", fmt.Errorf("%w: expand file path: %v", ErrExecution, err)
+			return nil, fmt.Errorf("%w: expand file path: %v", ErrExecution, err)
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("%w: read file %q: %v", ErrExecution, path, err)
+			return nil, fmt.Errorf("%w: read file %q: %v", ErrExecution, path, err)
 		}
 		return maybeTrim(string(content), spec.Trim), nil
 	case "shell":
@@ -212,17 +217,17 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (string, e
 			if message == "" {
 				message = err.Error()
 			}
-			return "", fmt.Errorf("%w: shell command failed: %s", ErrExecution, message)
+			return nil, fmt.Errorf("%w: shell command failed: %s", ErrExecution, message)
 		}
 		return maybeTrim(stdout.String(), spec.Trim), nil
 	case "state":
 		value, ok := r.state.Values[spec.Key]
 		if !ok {
-			return "", fmt.Errorf("%w: state key %q not found", ErrExecution, spec.Key)
+			return nil, fmt.Errorf("%w: state key %q not found", ErrExecution, spec.Key)
 		}
 		return maybeTrim(value, spec.Trim), nil
 	default:
-		return "", fmt.Errorf("%w: unsupported source %q", ErrConfig, spec.From)
+		return nil, fmt.Errorf("%w: unsupported source %q", ErrConfig, spec.From)
 	}
 }
 
@@ -242,6 +247,59 @@ func maybeTrim(value string, trim bool) string {
 		return strings.TrimSpace(value)
 	}
 	return value
+}
+
+func maybeTrimValue(value any, trim bool) any {
+	asString, ok := value.(string)
+	if !ok {
+		return value
+	}
+	return maybeTrim(asString, trim)
+}
+
+func coerceToSampleType(raw string, sample any) (any, error) {
+	switch sample.(type) {
+	case string:
+		return raw, nil
+	case int:
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return int(value), nil
+	case int8:
+		value, err := strconv.ParseInt(raw, 10, 8)
+		if err != nil {
+			return nil, err
+		}
+		return int8(value), nil
+	case int16:
+		value, err := strconv.ParseInt(raw, 10, 16)
+		if err != nil {
+			return nil, err
+		}
+		return int16(value), nil
+	case int32:
+		value, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			return nil, err
+		}
+		return int32(value), nil
+	case int64:
+		return strconv.ParseInt(raw, 10, 64)
+	case float32:
+		value, err := strconv.ParseFloat(raw, 32)
+		if err != nil {
+			return nil, err
+		}
+		return float32(value), nil
+	case float64:
+		return strconv.ParseFloat(raw, 64)
+	case bool:
+		return strconv.ParseBool(raw)
+	default:
+		return raw, nil
+	}
 }
 
 func stringifyScalar(value any) (string, error) {

@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -316,7 +318,7 @@ base_url = %q
 path = "/search"
 headers = { X-Mode = { from = "literal", value = "agent" } }
 query = { q = { from = "param", key = "query" }, page = { from = "param", key = "page", default = 1 } }
-body = { keyword = { from = "param", key = "query" }, source = { from = "literal", value = "cli" } }
+body = { keyword = { from = "param", key = "query" }, source = { from = "literal", value = "cli" }, id = { from = "param", key = "id", default = 9062 } }
 `, server.URL))
 
 	cfg, err := loadConfig(configPath)
@@ -332,6 +334,7 @@ body = { keyword = { from = "param", key = "query" }, source = { from = "literal
 			Format:   formatJSON,
 			Params: map[string]string{
 				"query": "golang",
+				"id":    "8001",
 			},
 		},
 	}
@@ -352,6 +355,47 @@ body = { keyword = { from = "param", key = "query" }, source = { from = "literal
 	}
 	if body["keyword"] != "golang" || body["source"] != "cli" {
 		t.Fatalf("unexpected body: %#v", compiled.Body)
+	}
+	if body["id"] != int64(8001) {
+		t.Fatalf("expected numeric id, got %#v", compiled.Body)
+	}
+}
+
+func TestCompileRejectsInvalidParamTypeForDefaultSample(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+base_url = %q
+
+[actions.search]
+path = "/search"
+body = { id = { from = "param", key = "id", default = 9062 } }
+`, server.URL))
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	rt := NewRuntime(ioDiscard{}, ioDiscard{})
+	req := commandRequest{
+		Profile: "demo",
+		Action:  "search",
+		Options: globalOptions{
+			StateDir: t.TempDir(),
+			Format:   formatJSON,
+			Params: map[string]string{
+				"id": "not-a-number",
+			},
+		},
+	}
+
+	_, _, _, err = rt.compile(req, cfg, &profileState{Values: map[string]string{}})
+	if err == nil || !strings.Contains(err.Error(), `parameter "id"`) {
+		t.Fatalf("expected typed param error, got %v", err)
 	}
 }
 
@@ -391,6 +435,130 @@ cookies = { session = { from = "state", key = "auth.session" }, mode = { from = 
 	}
 	if compiled.Cookies["locale"] != "zh-CN" || compiled.Cookies["session"] != "abc123" || compiled.Cookies["mode"] != "agent" {
 		t.Fatalf("unexpected compiled cookies: %#v", compiled.Cookies)
+	}
+}
+
+func TestCompileSupportsProfileAndActionProxy(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+base_url = %q
+proxy = "http://127.0.0.1:8001"
+
+[actions.default]
+path = "/default"
+
+[actions.override]
+path = "/override"
+proxy = "http://127.0.0.1:8002"
+`, server.URL))
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	rt := NewRuntime(ioDiscard{}, ioDiscard{})
+
+	defaultReq := commandRequest{
+		Profile: "demo",
+		Action:  "default",
+		Options: globalOptions{
+			StateDir: t.TempDir(),
+			Format:   formatJSON,
+		},
+	}
+	defaultCompiled, _, _, err := rt.compile(defaultReq, cfg, &profileState{Values: map[string]string{}})
+	if err != nil {
+		t.Fatalf("compile default failed: %v", err)
+	}
+	if defaultCompiled.Proxy != "http://127.0.0.1:8001" {
+		t.Fatalf("unexpected default proxy: %#v", defaultCompiled.Proxy)
+	}
+
+	overrideReq := defaultReq
+	overrideReq.Action = "override"
+	overrideCompiled, _, _, err := rt.compile(overrideReq, cfg, &profileState{Values: map[string]string{}})
+	if err != nil {
+		t.Fatalf("compile override failed: %v", err)
+	}
+	if overrideCompiled.Proxy != "http://127.0.0.1:8002" {
+		t.Fatalf("unexpected override proxy: %#v", overrideCompiled.Proxy)
+	}
+}
+
+func TestCompileSupportsDynamicProxySource(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+	t.Setenv("HTTPX_PROXY", "http://127.0.0.1:8001")
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+base_url = %q
+proxy = { from = "env", key = "HTTPX_PROXY" }
+
+[actions.default]
+path = "/default"
+`, server.URL))
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	rt := NewRuntime(ioDiscard{}, ioDiscard{})
+	req := commandRequest{
+		Profile: "demo",
+		Action:  "default",
+		Options: globalOptions{
+			StateDir: t.TempDir(),
+			Format:   formatJSON,
+		},
+	}
+
+	compiled, _, _, err := rt.compile(req, cfg, &profileState{Values: map[string]string{}})
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	if compiled.Proxy != "http://127.0.0.1:8001" {
+		t.Fatalf("unexpected dynamic proxy: %#v", compiled.Proxy)
+	}
+}
+
+func TestCompileRejectsInvalidProxyURL(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+base_url = %q
+proxy = "127.0.0.1:8001"
+
+[actions.default]
+path = "/default"
+`, server.URL))
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	rt := NewRuntime(ioDiscard{}, ioDiscard{})
+	req := commandRequest{
+		Profile: "demo",
+		Action:  "default",
+		Options: globalOptions{
+			StateDir: t.TempDir(),
+			Format:   formatJSON,
+		},
+	}
+
+	_, _, _, err = rt.compile(req, cfg, &profileState{Values: map[string]string{}})
+	if err == nil || !strings.Contains(err.Error(), "proxy") {
+		t.Fatalf("expected proxy error, got %v", err)
 	}
 }
 
@@ -664,6 +832,7 @@ base_url = %q
 [actions.secret]
 method = "POST"
 path = "/secret"
+proxy = "http://alice:secret@proxy.example:8001"
 headers = { Authorization = { from = "env", key = "HTTPX_SECRET" } }
 query = { token = { from = "env", key = "HTTPX_SECRET" } }
 body = { nested = { from = "env", key = "HTTPX_SECRET" } }
@@ -681,12 +850,109 @@ body = { nested = { from = "env", key = "HTTPX_SECRET" } }
 	if compiled.Headers["Authorization"] != redactedValue {
 		t.Fatalf("expected redacted auth header, got %#v", compiled.Headers)
 	}
+	if compiled.Proxy != "http://%2A%2A%2A:%2A%2A%2A@proxy.example:8001" {
+		t.Fatalf("expected redacted proxy, got %#v", compiled.Proxy)
+	}
 	if !strings.Contains(compiled.URL, "token=%2A%2A%2A") {
 		t.Fatalf("expected redacted query token in URL, got %s", compiled.URL)
 	}
 	body, ok := compiled.Body.(map[string]any)
 	if !ok || body["nested"] != redactedValue {
 		t.Fatalf("expected redacted body, got %#v", compiled.Body)
+	}
+}
+
+func TestInspectRevealShowsProxyCredentials(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+base_url = %q
+
+[actions.secret]
+path = "/secret"
+proxy = "http://alice:secret@proxy.example:8001"
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--inspect", "--reveal", "demo", "secret"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	var compiled compiledRequest
+	if err := json.Unmarshal([]byte(stdout), &compiled); err != nil {
+		t.Fatalf("unmarshal inspect output: %v", err)
+	}
+	if compiled.Proxy != "http://alice:secret@proxy.example:8001" {
+		t.Fatalf("unexpected revealed proxy: %#v", compiled.Proxy)
+	}
+}
+
+func TestBuildTransportUsesEnvironmentProxyByDefault(t *testing.T) {
+	transport, err := buildTransport("")
+	if err != nil {
+		t.Fatalf("buildTransport failed: %v", err)
+	}
+	if transport.Proxy == nil {
+		t.Fatal("expected environment proxy resolver")
+	}
+	if reflect.ValueOf(transport.Proxy).Pointer() != reflect.ValueOf(http.ProxyFromEnvironment).Pointer() {
+		t.Fatal("expected buildTransport to fall back to http.ProxyFromEnvironment")
+	}
+}
+
+func TestRuntimeUsesExplicitProxy(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("pong"))
+	}))
+	t.Cleanup(origin.Close)
+
+	var proxiedURL string
+	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+	baseTransport.Proxy = nil
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxiedURL = r.URL.String()
+
+		outbound := r.Clone(r.Context())
+		outbound.RequestURI = ""
+		resp, err := baseTransport.RoundTrip(outbound)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		for key, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	t.Cleanup(proxy.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+base_url = %q
+proxy = %q
+
+[actions.ping]
+path = "/ping"
+`, origin.URL, proxy.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", t.TempDir(), "--format", "body", "demo", "ping"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if stdout != "pong" {
+		t.Fatalf("unexpected body output: %q", stdout)
+	}
+	if proxiedURL != origin.URL+"/ping" {
+		t.Fatalf("expected request to traverse proxy, got %q", proxiedURL)
 	}
 }
 

@@ -141,6 +141,14 @@ httpx <profile> <action>
 - 否则目录为 `~/.local/state/httpx`
 - 也可以用 `--state-dir <path>` 覆盖默认目录
 
+运行约定：
+
+- 不建议把 `--state-dir` 指到 `/tmp/...`，因为这类目录常常跟着沙箱或容器生命周期一起销毁
+- 推荐优先使用用户级持久目录：`~/.local/state/httpx`
+- 如果需要显式路径，推荐 `--state-dir "$HOME/.local/httpx-state"`
+- 不建议默认使用 `~/.secret/httpx` 或 `~/.secret/httpx-state`；这里保存的是 mutable runtime state，不是静态 secret 配置
+- 在容器里能否持久化，关键取决于 `HOME` 或 `--state-dir` 是否绑定到宿主机目录或持久卷，而不是路径名本身
+
 每个 profile 对应一个 state 文件：
 
 - 文件名：`<profile>.json`
@@ -229,6 +237,7 @@ CLI 有两种主要输出模式：
 - `inspect` 会默认脱敏常见敏感头和动态值
 - state 文件以 JSON 明文保存在本地
 - state 文件权限写为 `0600`
+- state 目录如果不存在，会由程序自动创建；当前实现的目录权限是 `0755`
 
 需要明确的限制：
 
@@ -236,6 +245,7 @@ CLI 有两种主要输出模式：
 - `cookies` 中的 session cookie 也是明文保存的
 - 这些文件不应该提交到仓库
 - 共享机器或低信任环境下应显式指定安全的 `--state-dir`
+- 更稳妥的部署约定是由启动脚本或运维预创建 state 目录，并将目录权限设置为 `0700`
 
 这次文档方案只澄清当前行为，不引入 keychain 或加密存储。
 

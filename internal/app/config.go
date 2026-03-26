@@ -28,6 +28,7 @@ func (d *durationValue) UnmarshalText(text []byte) error {
 type configFile struct {
 	BaseURL     string            `toml:"base_url"`
 	LoginAction string            `toml:"login_action"`
+	Proxy       any               `toml:"proxy"`
 	Timeout     durationValue     `toml:"timeout"`
 	Retries     int               `toml:"retries"`
 	Headers     map[string]any    `toml:"headers"`
@@ -40,6 +41,7 @@ type configFile struct {
 type action struct {
 	Method       string            `toml:"method"`
 	Path         string            `toml:"path"`
+	Proxy        any               `toml:"proxy"`
 	Timeout      *durationValue    `toml:"timeout"`
 	Retries      *int              `toml:"retries"`
 	Headers      map[string]any    `toml:"headers"`
@@ -56,6 +58,7 @@ type mergedAction struct {
 	Name         string
 	Method       string
 	Path         string
+	Proxy        any
 	Timeout      time.Duration
 	Retries      int
 	Headers      map[string]any
@@ -157,10 +160,16 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 		}
 	}
 
+	proxy := cfg.Proxy
+	if act.Proxy != nil {
+		proxy = act.Proxy
+	}
+
 	return mergedAction{
 		Name:         actionName,
 		Method:       method,
 		Path:         act.Path,
+		Proxy:        proxy,
 		Timeout:      timeout,
 		Retries:      retries,
 		Headers:      mergeMap(cfg.Headers, act.Headers),

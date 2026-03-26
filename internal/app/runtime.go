@@ -26,6 +26,7 @@ type compiledRequest struct {
 	Action       string            `json:"action"`
 	Method       string            `json:"method"`
 	URL          string            `json:"url"`
+	Proxy        string            `json:"proxy,omitempty"`
 	Headers      map[string]string `json:"headers,omitempty"`
 	Cookies      map[string]string `json:"cookies,omitempty"`
 	Body         any               `json:"body,omitempty"`
@@ -157,6 +158,25 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 		cookies[key] = value
 	}
 
+	proxyValue := ""
+	if merged.Proxy != nil {
+		resolved, err := res.resolveAny(ctx, merged.Proxy)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		value, err := stringifyScalar(resolved)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		value = strings.TrimSpace(value)
+		if value != "" && !(req.Options.Inspect && !req.Options.Reveal && value == redactedValue) {
+			if _, err := parseProxyURL(value); err != nil {
+				return nil, nil, nil, fmt.Errorf("%w: proxy: %v", ErrConfig, err)
+			}
+		}
+		proxyValue = value
+	}
+
 	baseURL, err := url.Parse(cfg.BaseURL)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%w: parse base_url: %v", ErrConfig, err)
@@ -218,11 +238,16 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 	}
 
 	jar := newPersistentJar(state.Cookies)
+	compiledProxy := proxyValue
+	if req.Options.Inspect && !req.Options.Reveal {
+		compiledProxy = redactProxyURL(proxyValue)
+	}
 	return &compiledRequest{
 		Profile:      req.Profile,
 		Action:       actionName,
 		Method:       merged.Method,
 		URL:          finalURL.String(),
+		Proxy:        compiledProxy,
 		Headers:      headers,
 		Cookies:      cookies,
 		Body:         bodyValue,
@@ -237,9 +262,21 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 }
 
 func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *persistentJar, state *profileState) requestOutcome {
-	client := &http.Client{
-		Jar:     jar,
-		Timeout: time.Duration(compiled.TimeoutMS) * time.Millisecond,
+	client, err := newHTTPClient(compiled, jar)
+	if err != nil {
+		exitCode, code := classifyError(err)
+		return requestOutcome{
+			Envelope: envelope{
+				OK:      false,
+				Profile: req.Profile,
+				Action:  compiled.Action,
+				Error: &errorEnvelope{
+					Code:    code,
+					Message: err.Error(),
+				},
+			},
+			ExitCode: exitCode,
+		}
 	}
 
 	var lastErr error
@@ -271,6 +308,71 @@ func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *p
 		},
 		ExitCode: exitCode,
 	}
+}
+
+func newHTTPClient(compiled *compiledRequest, jar *persistentJar) (*http.Client, error) {
+	transport, err := buildTransport(compiled.Proxy)
+	if err != nil {
+		return nil, fmt.Errorf("%w: proxy: %v", ErrConfig, err)
+	}
+	return &http.Client{
+		Jar:       jar,
+		Timeout:   time.Duration(compiled.TimeoutMS) * time.Millisecond,
+		Transport: transport,
+	}, nil
+}
+
+func buildTransport(proxyAddress string) (*http.Transport, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if strings.TrimSpace(proxyAddress) == "" {
+		transport.Proxy = http.ProxyFromEnvironment
+		return transport, nil
+	}
+	proxyURL, err := parseProxyURL(proxyAddress)
+	if err != nil {
+		return nil, err
+	}
+	transport.Proxy = http.ProxyURL(proxyURL)
+	return transport, nil
+}
+
+func parseProxyURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("proxy URL must include scheme and host")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return parsed, nil
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme %q", parsed.Scheme)
+	}
+}
+
+func redactProxyURL(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return redactedValue
+	}
+	if parsed.User == nil {
+		return raw
+	}
+	if _, ok := parsed.User.Password(); ok {
+		parsed.User = url.UserPassword(redactedValue, redactedValue)
+	} else {
+		parsed.User = url.User(redactedValue)
+	}
+	return parsed.String()
 }
 
 func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled *compiledRequest, jar *persistentJar, state *profileState) (requestOutcome, bool, error) {

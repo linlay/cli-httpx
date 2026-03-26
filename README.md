@@ -63,7 +63,20 @@ extract = ".body"
 3. 执行 `httpx --config . demo login`
 4. 执行 `httpx --config . demo me`
 
-示例配置见 [examples/config.toml](./examples/config.toml)。
+仓库内的通用示例配置见 [examples/config.toml](./examples/config.toml)。
+
+实际站点的 profile 更适合放在用户本地配置目录：
+
+- `$XDG_CONFIG_HOME/httpx`
+- 或 `~/.config/httpx`
+
+如果终端访问目标站点需要走代理，可以在 profile 顶层或 action 中配置：
+
+```toml
+proxy = "http://127.0.0.1:8001"
+```
+
+action 级别的 `proxy` 会覆盖 profile 级别的 `proxy`。未配置时，CLI 继续沿用环境变量代理行为。
 
 ## 常用命令
 
@@ -91,6 +104,38 @@ httpx demo --format json --config ./examples me
 - `--state-dir <path>`：覆盖默认状态目录
 - `--inspect`：只编译请求，不发请求
 - `--reveal`：仅 `--inspect` 下显示真实敏感值
+
+## State 目录约定
+
+`httpx` 的 state 用来保存登录 cookie、`save` 提取出的 token 和最近一次登录时间。它是本地运行时状态，不建议放到 `/tmp` 这类沙箱或容器退出后即丢失的目录。
+
+推荐约定：
+
+- 首选让默认目录生效：设置 `XDG_STATE_HOME=$HOME/.local/state`，state 会落到 `~/.local/state/httpx`
+- 如果要显式指定路径，统一使用 `--state-dir "$HOME/.local/httpx-state"`
+- 不建议默认放到 `~/.secret/httpx` 或 `~/.secret/httpx-state`；`state` 更适合放在用户级 state 目录，而不是和静态 secret 配置混用
+
+容器或沙箱里要特别注意：
+
+- 能否持久化，关键不在目录名，而在于这个目录是否挂载到宿主机或持久卷
+- 如果 `HOME` 本身是持久挂载，直接用默认目录即可
+- 如果 `HOME` 不是持久挂载，即使写到 `~/.local/...`，容器销毁后也一样会丢
+
+推荐调用方式：
+
+```bash
+XDG_STATE_HOME="$HOME/.local/state" ./httpx --format json nexus login
+XDG_STATE_HOME="$HOME/.local/state" ./httpx --format json nexus profile
+```
+
+或者：
+
+```bash
+./httpx --state-dir "$HOME/.local/httpx-state" --format json nexus login
+./httpx --state-dir "$HOME/.local/httpx-state" --format json nexus profile
+```
+
+部署时建议由启动脚本或运维预创建 state 目录并设置为 `0700`。state 文件本身由 `httpx` 写为 `0600`。
 
 ## 测试
 
@@ -163,6 +208,13 @@ shasum -a 256 -c httpx_v0.1.0_checksums.txt
 - `values`：保存 `save = { ... }` 提取出来的字符串值，例如 access token
 - `cookies`：保存登录态 cookie
 - `last_login`：记录最近一次登录时间
+
+运行约定补充：
+
+- 不建议把 `--state-dir` 指到 `/tmp/...`
+- 容器内如需跨重启保留登录态，应把 `HOME` 或显式 state 目录挂载到持久卷
+- 可接受的显式目录示例：`~/.local/httpx-state`
+- 不建议默认使用 `~/.secret/httpx` 作为 state 目录
 
 state 文件是本地明文 JSON。更完整的状态模型、写回时机和安全约束见 [CLAUDE.md](./CLAUDE.md)。
 
