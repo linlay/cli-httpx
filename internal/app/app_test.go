@@ -217,6 +217,29 @@ func TestParseArgsDefaultsToBodyExceptInspect(t *testing.T) {
 	}
 }
 
+func TestDefaultStateDirUsesLocalHTTPXStateWithoutXDG(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_STATE_HOME", "")
+
+	got := defaultStateDir()
+	want := filepath.Join(homeDir, ".local", "httpx-state")
+	if got != want {
+		t.Fatalf("defaultStateDir mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestDefaultStateDirUsesXDGStateHomeWhenSet(t *testing.T) {
+	xdgStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+
+	got := defaultStateDir()
+	want := filepath.Join(xdgStateHome, "httpx")
+	if got != want {
+		t.Fatalf("defaultStateDir mismatch: got %q want %q", got, want)
+	}
+}
+
 func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	t.Parallel()
 

@@ -37,5 +37,5 @@ func defaultStateDir() string {
 	if err != nil {
 		return ".httpx-state"
 	}
-	return filepath.Join(home, ".local", "state", "httpx")
+	return filepath.Join(home, ".local", "httpx-state")
 }
