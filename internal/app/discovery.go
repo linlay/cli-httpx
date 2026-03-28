@@ -33,9 +33,8 @@ type siteResponse struct {
 }
 
 type actionSummary struct {
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	IsLoginAction bool   `json:"is_login_action"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type actionsResponse struct {
@@ -143,9 +142,8 @@ func (rt *Runtime) runListActions(req commandRequest) int {
 	for _, name := range names {
 		act := cfg.Actions[name]
 		items = append(items, actionSummary{
-			Name:          name,
-			Description:   act.Description,
-			IsLoginAction: name == cfg.LoginAction,
+			Name:        name,
+			Description: act.Description,
 		})
 	}
 
@@ -260,15 +258,11 @@ func writeActionsText(w io.Writer, site string, actions []actionSummary) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ACTION\tDESCRIPTION\tLOGIN"); err != nil {
+	if _, err := fmt.Fprintln(tw, "ACTION\tDESCRIPTION"); err != nil {
 		return err
 	}
 	for _, action := range actions {
-		login := "no"
-		if action.IsLoginAction {
-			login = "yes"
-		}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\n", action.Name, action.Description, login); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\n", action.Name, action.Description); err != nil {
 			return err
 		}
 	}

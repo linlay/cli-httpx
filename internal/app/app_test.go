@@ -1201,13 +1201,41 @@ path = "/search"
 	if siteResp.Site.Name != "alpha" || siteResp.Site.State.SavedValues != 1 || !siteResp.Site.State.Exists {
 		t.Fatalf("unexpected site response: %#v", siteResp)
 	}
+	if siteResp.Site.LoginAction != "signin" {
+		t.Fatalf("unexpected login_action in site response: %#v", siteResp)
+	}
 
 	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "actions", "alpha"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("actions failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
-	if !strings.Contains(stdout, "signin") || !strings.Contains(stdout, "yes") || !strings.Contains(stdout, "profile") {
+	if !strings.Contains(stdout, "signin") || !strings.Contains(stdout, "profile") {
 		t.Fatalf("unexpected actions output: %q", stdout)
+	}
+	if strings.Contains(stdout, "LOGIN") || strings.Contains(stdout, "yes") || strings.Contains(stdout, "no") {
+		t.Fatalf("unexpected login marker in actions output: %q", stdout)
+	}
+
+	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "actions", "alpha"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("actions json failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	var actionsResp map[string]any
+	if err := json.Unmarshal([]byte(stdout), &actionsResp); err != nil {
+		t.Fatalf("unmarshal actions output: %v", err)
+	}
+	actions, ok := actionsResp["actions"].([]any)
+	if !ok || len(actions) != 2 {
+		t.Fatalf("unexpected actions response: %#v", actionsResp)
+	}
+	for _, item := range actions {
+		action, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected action item: %#v", item)
+		}
+		if _, exists := action["is_login_action"]; exists {
+			t.Fatalf("unexpected is_login_action field: %#v", action)
+		}
 	}
 
 	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "state", "alpha"})

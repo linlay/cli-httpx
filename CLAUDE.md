@@ -115,8 +115,35 @@ httpx inspect <site> <action>
 
 - `sites`：列出可用 site、描述、action 数和是否有 local state
 - `site <site>`：列出站点描述、`base_url`、`login_action` 和 state 摘要
-- `actions <site>`：列出 action 名、描述，并标记登录 action
+- `actions <site>`：列出 action 名和描述
 - `state <site>`：只显示 state 摘要，不显示 state 里的具体值
+
+## 站点测试约定
+
+标准测试顺序：
+
+1. 先做 discovery：`site <site>`、`actions <site>`、`state <site>`
+2. 再做编译验证：`inspect <site> <action>`
+3. 最后做真实请求验证：`run <site> <action>`
+
+命令语义：
+
+- `site <site>`：检查站点摘要、`base_url`、`login_action` 和 state 摘要
+- `actions <site>`：检查 action 名和描述列表
+- `state <site>`：只检查本地 state 摘要，不暴露敏感值
+- `inspect <site> <action>`：用于无副作用验证 action 编译结果
+- `run <site> <action>`：用于真实请求验证，可能依赖登录态或站点自身匿名访问策略
+- `login <site>`：
+  - 若配置了 `login_action`，应执行登录动作并刷新 state
+  - 若未配置 `login_action`，应返回配置错误
+
+维护约定：
+
+- 新增或修改 site 配置后，默认先做 discovery，再做 inspect，最后做 run
+- `inspect` 是站点联调前的主验证方式，因为它不发请求且能暴露配置编译问题
+- `run` 的测试结果会受真实网络、服务端状态和本地 state/cookie 影响
+- 标准仓库文档不写某个具体站点的私有测试流程
+- 站点特有说明如果必须保留，应放在本地私有配置注释，不进入仓库通用文档
 
 ### `version`
 
