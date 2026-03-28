@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,6 +35,18 @@ func (p *paramValues) Set(raw string) error {
 	}
 	(*p)[key] = value
 	return nil
+}
+
+func parseExtractInput(raw string) (map[string]any, error) {
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return nil, fmt.Errorf("invalid --extract JSON: %v", err)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid --extract %q, expected a JSON object", raw)
+	}
+	return object, nil
 }
 
 func Main(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -121,6 +134,21 @@ func parseArgs(args []string) (commandRequest, error) {
 			return commandRequest{}, usageError()
 		}
 		req := commandRequest{Command: cmd, Options: opts}
+		if !formatSet {
+			req.Options.Format = formatText
+		}
+		if err := validateCommandOptions(&req, formatSet); err != nil {
+			return commandRequest{}, err
+		}
+		return req, nil
+	case commandAction:
+		if len(rest) != 3 {
+			return commandRequest{}, usageError()
+		}
+		req := commandRequest{Command: cmd, Site: rest[1], Action: rest[2], Options: opts}
+		if err := validateSiteName(req.Site); err != nil {
+			return commandRequest{}, err
+		}
 		if !formatSet {
 			req.Options.Format = formatText
 		}
@@ -219,6 +247,29 @@ func parseGlobalArgs(args []string, opts *globalOptions) ([]string, bool, error)
 			i = next
 		case strings.HasPrefix(arg, "--state="):
 			opts.StateDir = strings.TrimPrefix(arg, "--state=")
+		case arg == "--extract":
+			value, next, err := requireFlagValue(args, i, "--extract")
+			if err != nil {
+				return nil, false, err
+			}
+			if opts.ExtractInput != nil {
+				return nil, false, fmt.Errorf("--extract may only be provided once")
+			}
+			extractInput, err := parseExtractInput(value)
+			if err != nil {
+				return nil, false, err
+			}
+			opts.ExtractInput = extractInput
+			i = next
+		case strings.HasPrefix(arg, "--extract="):
+			if opts.ExtractInput != nil {
+				return nil, false, fmt.Errorf("--extract may only be provided once")
+			}
+			extractInput, err := parseExtractInput(strings.TrimPrefix(arg, "--extract="))
+			if err != nil {
+				return nil, false, err
+			}
+			opts.ExtractInput = extractInput
 		case arg == "--param":
 			value, next, err := requireFlagValue(args, i, "--param")
 			if err != nil {
@@ -266,11 +317,14 @@ func validateCommandOptions(req *commandRequest, formatSet bool) error {
 		if req.Options.Format != formatBody && req.Options.Format != formatJSON {
 			return fmt.Errorf("--format %s is not supported with %s", req.Options.Format, req.Command)
 		}
+		if req.Command == commandLogin && req.Options.ExtractInput != nil {
+			return fmt.Errorf("--extract is not supported with %s", req.Command)
+		}
 	case commandInspect:
 		if req.Options.Format != formatJSON {
 			return fmt.Errorf("--format %s is not supported with inspect", req.Options.Format)
 		}
-	case commandSites, commandSite, commandActions, commandState:
+	case commandSites, commandSite, commandAction, commandActions, commandState:
 		if req.Options.Format != formatText && req.Options.Format != formatJSON {
 			return fmt.Errorf("--format %s is not supported with %s", req.Options.Format, req.Command)
 		}
@@ -279,6 +333,9 @@ func validateCommandOptions(req *commandRequest, formatSet bool) error {
 		}
 		if len(req.Options.Params) > 0 {
 			return fmt.Errorf("--param is not supported with %s", req.Command)
+		}
+		if req.Options.ExtractInput != nil {
+			return fmt.Errorf("--extract is not supported with %s", req.Command)
 		}
 		if req.Options.Reveal {
 			return fmt.Errorf("--reveal is not supported with %s", req.Command)
@@ -311,7 +368,7 @@ func validateSiteName(site string) error {
 
 func isReservedWord(value string) bool {
 	switch strings.TrimSpace(value) {
-	case "run", "inspect", "login", "sites", "site", "actions", "state", "version", "help":
+	case "run", "inspect", "login", "sites", "site", "action", "actions", "state", "version", "help":
 		return true
 	default:
 		return false
@@ -326,6 +383,7 @@ func usageText() string {
 		"  httpx login <site>",
 		"  httpx sites",
 		"  httpx site <site>",
+		"  httpx action <site> <action>",
 		"  httpx actions <site>",
 		"  httpx state <site>",
 		"  httpx version",
@@ -338,12 +396,13 @@ func usageText() string {
 		"  --format text|json|body",
 		"  --timeout <duration>",
 		"  --param key=value",
+		"  --extract <json-object>",
 		"  --reveal",
 		"",
 		"Format defaults:",
 		"  run/login = body",
 		"  inspect = json",
-		"  sites/site/actions/state = text",
+		"  sites/site/action/actions/state = text",
 		"",
 		"Notes:",
 		"  version = 1 inside TOML site files is the config schema version, not the CLI release version.",

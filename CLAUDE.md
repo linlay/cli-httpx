@@ -32,7 +32,7 @@
 - `site`：一个 TOML 文件，对应一个站点或系统
 - `action`：site 中的一个命名请求动作
 - `compiled request`：把默认值、action、动态值、CLI 参数合并后的最终请求
-- `execute`：真正发起 HTTP 请求、处理 cookie、执行 `extract`/`save`
+- `execute`：真正发起 HTTP 请求、处理 cookie、执行 `extract_*`/`save`
 - `envelope/state`：将结果输出为 body 或 json，并把本地状态落盘
 
 ## 配置语义
@@ -65,8 +65,25 @@
 - `body`
 - `form`
 - `expect_status`
-- `extract`
+- `extract_type`
+- `extract_expr`
+- `extract_pattern`
+- `extract_group`
+- `extract_all`
+- `params`
+- `extracts`
 - `save`
+
+运行时还支持一个 CLI 级的 extractor 输入：
+
+- `--extract <json-object>`
+
+语义约定：
+
+- `--param` 只参与请求编译
+- `--extract` 只参与 extractor 执行
+- jq extractor 通过 `.extract` 读取该输入
+- regex extractor 通过 `{{extract.key}}` 模板占位符读取该输入
 
 ## 命令语义
 
@@ -108,6 +125,7 @@ httpx inspect <site> <action>
 
 - `httpx sites`
 - `httpx site <site>`
+- `httpx action <site> <action>`
 - `httpx actions <site>`
 - `httpx state <site>`
 
@@ -115,24 +133,27 @@ httpx inspect <site> <action>
 
 - `sites`：列出可用 site、描述、action 数和是否有 local state
 - `site <site>`：列出站点描述、`base_url`、`login_action` 和 state 摘要
-- `actions <site>`：列出 action 名和描述
+- `action <site> <action>`：列出 action 的方法、路径、extractor、save key，以及声明的 `params` / `extracts`
+- `actions <site>`：列出 action 名、描述，以及声明的 `params` / `extracts` 数量
 - `state <site>`：只显示 state 摘要，不显示 state 里的具体值
 
 ## 站点测试约定
 
 标准测试顺序：
 
-1. 先做 discovery：`site <site>`、`actions <site>`、`state <site>`
+1. 先做 discovery：`site <site>`、`actions <site>`、`action <site> <action>`、`state <site>`
 2. 再做编译验证：`inspect <site> <action>`
 3. 最后做真实请求验证：`run <site> <action>`
 
 命令语义：
 
 - `site <site>`：检查站点摘要、`base_url`、`login_action` 和 state 摘要
-- `actions <site>`：检查 action 名和描述列表
+- `actions <site>`：检查 action 名、描述，以及声明的 `param` / `extract` 数量
+- `action <site> <action>`：检查 action 的完整输入契约和摘要配置
 - `state <site>`：只检查本地 state 摘要，不暴露敏感值
 - `inspect <site> <action>`：用于无副作用验证 action 编译结果
 - `run <site> <action>`：用于真实请求验证，可能依赖登录态或站点自身匿名访问策略
+- `run <site> <action> --extract '{...}'`：在不改配置的前提下给 extractor 传入运行时过滤条件
 - `login <site>`：
   - 若配置了 `login_action`，应执行登录动作并刷新 state
   - 若未配置 `login_action`，应返回配置错误
@@ -153,7 +174,7 @@ httpx inspect <site> <action>
 - commit
 - build time
 
-`version`、`run`、`inspect`、`login`、`sites`、`site`、`actions`、`state`、`help` 都是顶层保留字，不能作为 site 名使用。
+`version`、`run`、`inspect`、`login`、`sites`、`site`、`action`、`actions`、`state`、`help` 都是顶层保留字，不能作为 site 名使用。
 
 ## 动态值解析
 
@@ -272,13 +293,15 @@ CLI 有两种主要输出模式：
 
 `body`：
 
-- 成功时直接输出响应体原文
+- 未配置 `extract_*` 时直接输出响应体原文
+- 配置了 `extract_*` 时输出提取结果
 - 失败时错误信息写到 stderr
 
 `json`：
 
 - 输出结构化 envelope
 - 执行类命令包含 site、action、status、headers、body、extract、state 更新字段等信息
+- 配置了 `extract_*` 的 action 在 `json` 输出下默认省略完整 `body`，只保留 `extract`
 - discovery 命令输出 `sites`、`site`、`actions`、`state` 这些结构化摘要
 
 `inspect` 默认也使用结构化 JSON 输出编译后的请求描述。

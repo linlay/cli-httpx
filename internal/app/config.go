@@ -40,24 +40,31 @@ type configFile struct {
 }
 
 type action struct {
-	Description  string            `toml:"description"`
-	Method       string            `toml:"method"`
-	Path         string            `toml:"path"`
-	Proxy        any               `toml:"proxy"`
-	Timeout      *durationValue    `toml:"timeout"`
-	Retries      *int              `toml:"retries"`
-	Headers      map[string]any    `toml:"headers"`
-	Cookies      map[string]any    `toml:"cookies"`
-	Query        map[string]any    `toml:"query"`
-	Body         any               `toml:"body"`
-	Form         map[string]any    `toml:"form"`
-	ExpectStatus any               `toml:"expect_status"`
-	Extract      string            `toml:"extract"`
-	Save         map[string]string `toml:"save"`
+	Description    string            `toml:"description"`
+	Method         string            `toml:"method"`
+	Path           string            `toml:"path"`
+	Proxy          any               `toml:"proxy"`
+	Timeout        *durationValue    `toml:"timeout"`
+	Retries        *int              `toml:"retries"`
+	Headers        map[string]any    `toml:"headers"`
+	Cookies        map[string]any    `toml:"cookies"`
+	Query          map[string]any    `toml:"query"`
+	Body           any               `toml:"body"`
+	Form           map[string]any    `toml:"form"`
+	ExpectStatus   any               `toml:"expect_status"`
+	ExtractType    string            `toml:"extract_type"`
+	ExtractExpr    string            `toml:"extract_expr"`
+	ExtractPattern string            `toml:"extract_pattern"`
+	ExtractGroup   *int              `toml:"extract_group"`
+	ExtractAll     *bool             `toml:"extract_all"`
+	Params         []actionInputSpec `toml:"params"`
+	Extracts       []actionInputSpec `toml:"extracts"`
+	Save           map[string]string `toml:"save"`
 }
 
 type mergedAction struct {
 	Name         string
+	Description  string
 	Method       string
 	Path         string
 	Proxy        any
@@ -69,8 +76,19 @@ type mergedAction struct {
 	Body         any
 	Form         map[string]any
 	ExpectStatus []int
-	Extract      string
+	Extractor    *extractorSpec
+	Params       []actionInputSpec
+	Extracts     []actionInputSpec
 	Save         map[string]string
+}
+
+type actionInputSpec struct {
+	Name        string   `toml:"name" json:"name"`
+	Type        string   `toml:"type" json:"type,omitempty"`
+	Required    bool     `toml:"required" json:"required"`
+	Description string   `toml:"description" json:"description,omitempty"`
+	Example     any      `toml:"example" json:"example,omitempty"`
+	Enum        []string `toml:"enum" json:"enum,omitempty"`
 }
 
 func loadConfig(path string) (*configFile, error) {
@@ -117,6 +135,19 @@ func validateConfig(cfg *configFile) error {
 		if _, err := normalizeExpectStatus(act.ExpectStatus); err != nil {
 			return fmt.Errorf("%w: actions.%s.expect_status: %v", ErrConfig, actionName, err)
 		}
+		extractor, err := extractorFromAction(actionName, act)
+		if err != nil {
+			return err
+		}
+		if _, err := compileExtractor(actionName, extractor, nil); err != nil {
+			return err
+		}
+		if err := validateActionInputSpecs("actions."+actionName+".params", act.Params); err != nil {
+			return err
+		}
+		if err := validateActionInputSpecs("actions."+actionName+".extracts", act.Extracts); err != nil {
+			return err
+		}
 	}
 	if cfg.LoginAction != "" {
 		if _, ok := cfg.Actions[cfg.LoginAction]; !ok {
@@ -158,6 +189,10 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 	if retries < 0 {
 		return mergedAction{}, fmt.Errorf("%w: retries cannot be negative", ErrConfig)
 	}
+	extractor, err := extractorFromAction(actionName, act)
+	if err != nil {
+		return mergedAction{}, err
+	}
 
 	method := strings.ToUpper(strings.TrimSpace(act.Method))
 	if method == "" {
@@ -175,6 +210,7 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 
 	return mergedAction{
 		Name:         actionName,
+		Description:  act.Description,
 		Method:       method,
 		Path:         act.Path,
 		Proxy:        proxy,
@@ -186,9 +222,44 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 		Body:         act.Body,
 		Form:         copyMap(act.Form),
 		ExpectStatus: expectStatus,
-		Extract:      act.Extract,
+		Extractor:    extractor,
+		Params:       cloneActionInputSpecs(act.Params),
+		Extracts:     cloneActionInputSpecs(act.Extracts),
 		Save:         copyStringMap(act.Save),
 	}, nil
+}
+
+func validateActionInputSpecs(prefix string, specs []actionInputSpec) error {
+	seen := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		name := strings.TrimSpace(spec.Name)
+		if name == "" {
+			return fmt.Errorf("%w: %s.name is required", ErrConfig, prefix)
+		}
+		if _, ok := seen[name]; ok {
+			return fmt.Errorf("%w: %s contains duplicate name %q", ErrConfig, prefix, name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
+func cloneActionInputSpecs(specs []actionInputSpec) []actionInputSpec {
+	if len(specs) == 0 {
+		return []actionInputSpec{}
+	}
+	out := make([]actionInputSpec, len(specs))
+	for i, spec := range specs {
+		out[i] = actionInputSpec{
+			Name:        spec.Name,
+			Type:        spec.Type,
+			Required:    spec.Required,
+			Description: spec.Description,
+			Example:     cloneJSONValue(spec.Example),
+			Enum:        append([]string(nil), spec.Enum...),
+		}
+	}
+	return out
 }
 
 func normalizeExpectStatus(value any) ([]int, error) {

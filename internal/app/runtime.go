@@ -24,6 +24,7 @@ type Runtime struct {
 type compiledRequest struct {
 	Site         string            `json:"site"`
 	Action       string            `json:"action"`
+	Description  string            `json:"description"`
 	Method       string            `json:"method"`
 	URL          string            `json:"url"`
 	Proxy        string            `json:"proxy,omitempty"`
@@ -33,11 +34,15 @@ type compiledRequest struct {
 	TimeoutMS    int64             `json:"timeout_ms"`
 	Retries      int               `json:"retries"`
 	ExpectStatus []int             `json:"expect_status,omitempty"`
-	Extract      string            `json:"extract,omitempty"`
+	Extractor    *extractorSpec    `json:"extractor,omitempty"`
+	ExtractInput map[string]any    `json:"extract_input,omitempty"`
+	Params       []actionInputSpec `json:"params"`
+	Extracts     []actionInputSpec `json:"extracts"`
 	Save         map[string]string `json:"save,omitempty"`
 
-	BodyBytes   []byte `json:"-"`
-	ContentType string `json:"-"`
+	BodyBytes         []byte             `json:"-"`
+	ContentType       string             `json:"-"`
+	compiledExtractor *compiledExtractor `json:"-"`
 }
 
 type requestOutcome struct {
@@ -61,6 +66,8 @@ func (rt *Runtime) Run(req commandRequest) int {
 		return rt.runListSites(req)
 	case commandSite:
 		return rt.runShowSite(req)
+	case commandAction:
+		return rt.runShowAction(req)
 	case commandActions:
 		return rt.runListActions(req)
 	case commandState:
@@ -103,7 +110,15 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 	outcome := rt.execute(req, compiled, jar, state)
 	if req.Options.Format == formatBody {
 		if outcome.ExitCode == ExitSuccess {
-			if _, err := rt.stdout.Write(outcome.RawBody); err != nil {
+			content := outcome.RawBody
+			if compiled.compiledExtractor != nil {
+				content, err = renderExtractOutput(outcome.Envelope.Extract)
+				if err != nil {
+					fmt.Fprintf(rt.stderr, "error: %v\n", err)
+					return ExitExecution
+				}
+			}
+			if _, err := rt.stdout.Write(content); err != nil {
 				fmt.Fprintf(rt.stderr, "error: %v\n", err)
 				return ExitExecution
 			}
@@ -259,22 +274,31 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 	if req.Command == commandInspect && !req.Options.Reveal {
 		compiledProxy = redactProxyURL(proxyValue)
 	}
+	compiledExtractor, err := compileExtractor(actionName, merged.Extractor, req.Options.ExtractInput)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	return &compiledRequest{
-		Site:         req.Site,
-		Action:       actionName,
-		Method:       merged.Method,
-		URL:          finalURL.String(),
-		Proxy:        compiledProxy,
-		Headers:      headers,
-		Cookies:      cookies,
-		Body:         bodyValue,
-		TimeoutMS:    merged.Timeout.Milliseconds(),
-		Retries:      merged.Retries,
-		ExpectStatus: merged.ExpectStatus,
-		Extract:      merged.Extract,
-		Save:         merged.Save,
-		BodyBytes:    bodyBytes,
-		ContentType:  contentType,
+		Site:              req.Site,
+		Action:            actionName,
+		Description:       merged.Description,
+		Method:            merged.Method,
+		URL:               finalURL.String(),
+		Proxy:             compiledProxy,
+		Headers:           headers,
+		Cookies:           cookies,
+		Body:              bodyValue,
+		TimeoutMS:         merged.Timeout.Milliseconds(),
+		Retries:           merged.Retries,
+		ExpectStatus:      merged.ExpectStatus,
+		Extractor:         cloneExtractorSpec(merged.Extractor),
+		ExtractInput:      cloneJSONObject(req.Options.ExtractInput),
+		Params:            cloneActionInputSpecs(merged.Params),
+		Extracts:          cloneActionInputSpecs(merged.Extracts),
+		Save:              merged.Save,
+		BodyBytes:         bodyBytes,
+		ContentType:       contentType,
+		compiledExtractor: compiledExtractor,
 	}, jar, state, nil
 }
 
@@ -422,6 +446,7 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 	decodedBody := decodeResponseBody(response, bodyBytes)
 	headers := cloneHeaders(response.Header)
 	ctxValue := responseContext(response.StatusCode, headers, decodedBody, bodyBytes)
+	extractCtx := extractorContext(response.StatusCode, headers, decodedBody, bodyBytes, compiled.ExtractInput)
 
 	if response.StatusCode >= 500 && compiled.Retries > 0 {
 		if !matchesExpectedStatus(response.StatusCode, compiled.ExpectStatus) {
@@ -429,7 +454,7 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 		}
 	}
 
-	extracted, err := evaluateMaybe(compiled.Extract, ctxValue)
+	extracted, err := executeExtractor(compiled.compiledExtractor, extractCtx, bodyBytes)
 	if err != nil {
 		return requestOutcome{}, false, fmt.Errorf("%w: %v", ErrAssertion, err)
 	}
@@ -465,9 +490,11 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 		Status:       response.StatusCode,
 		DurationMS:   duration.Milliseconds(),
 		Headers:      headers,
-		Body:         decodedBody,
 		Extract:      extracted,
 		StateUpdated: updatedKeys,
+	}
+	if compiled.compiledExtractor == nil {
+		envelopeValue.Body = decodedBody
 	}
 
 	if !ok {
@@ -530,6 +557,38 @@ func responseContext(status int, headers map[string][]string, body any, rawBody 
 	}
 }
 
+func extractorContext(status int, headers map[string][]string, body any, rawBody []byte, extractInput map[string]any) map[string]any {
+	ctx := responseContext(status, headers, body, rawBody)
+	ctx["extract"] = cloneJSONObject(extractInput)
+	return ctx
+}
+
+func cloneJSONObject(input map[string]any) map[string]any {
+	if input == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = cloneJSONValue(value)
+	}
+	return out
+}
+
+func cloneJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneJSONObject(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneJSONValue(item)
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
 func evaluateMaybe(expr string, input any) (any, error) {
 	if strings.TrimSpace(expr) == "" {
 		return nil, nil
@@ -542,10 +601,22 @@ func evaluateRequired(expr string, input any) (any, error) {
 }
 
 func runJQ(expr string, input any, requireResult bool) (any, error) {
+	query, err := parseJQ(expr)
+	if err != nil {
+		return nil, err
+	}
+	return runParsedJQ(query, input, requireResult)
+}
+
+func parseJQ(expr string) (*gojq.Query, error) {
 	query, err := gojq.Parse(expr)
 	if err != nil {
 		return nil, fmt.Errorf("parse jq: %v", err)
 	}
+	return query, nil
+}
+
+func runParsedJQ(query *gojq.Query, input any, requireResult bool) (any, error) {
 	iter := query.Run(input)
 	results := []any{}
 	for {

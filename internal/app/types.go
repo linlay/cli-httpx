@@ -18,18 +18,20 @@ const (
 	commandLogin   commandKind = "login"
 	commandSites   commandKind = "sites"
 	commandSite    commandKind = "site"
+	commandAction  commandKind = "action"
 	commandActions commandKind = "actions"
 	commandState   commandKind = "state"
 )
 
 type globalOptions struct {
-	ConfigDir string
-	Format    outputFormat
-	Timeout   time.Duration
-	StateDir  string
-	Inspect   bool
-	Reveal    bool
-	Params    map[string]string
+	ConfigDir    string
+	Format       outputFormat
+	Timeout      time.Duration
+	StateDir     string
+	Inspect      bool
+	Reveal       bool
+	Params       map[string]string
+	ExtractInput map[string]any
 }
 
 type commandRequest struct {

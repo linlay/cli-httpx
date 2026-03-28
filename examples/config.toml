@@ -20,16 +20,57 @@ save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 description = "Fetch the current user profile"
 path = "/me"
 headers = { Authorization = { from = "state", key = "auth.authorization" } }
-extract = ".body"
+extract_type = "jq"
+extract_expr = ".body | {id, name, email}"
 
 [actions.search]
 description = "Search public resources"
 path = "/search"
-query = { q = "httpx", api_key = { from = "file", path = "~/.local/share/httpx/secrets/demo-api-key", trim = true } }
-extract = ".body.items[]?.id"
+query = { q = { from = "param", key = "q" }, limit = { from = "param", key = "limit", default = 10 }, api_key = { from = "file", path = "~/.local/share/httpx/secrets/demo-api-key", trim = true } }
+params = [
+  { name = "q", type = "string", required = true, description = "Search keyword", example = "httpx" },
+  { name = "limit", type = "number", description = "Result limit", example = 10 }
+]
+extract_type = "jq"
+extract_expr = ".body.items | map({id, name})"
+
+[actions.summary]
+description = "Build a filtered summary from the search result"
+path = "/search"
+query = { q = { from = "param", key = "q" }, api_key = { from = "file", path = "~/.local/share/httpx/secrets/demo-api-key", trim = true } }
+params = [
+  { name = "q", type = "string", required = true, description = "Search keyword", example = "httpx" }
+]
+extracts = [
+  { name = "days", type = "number", description = "Keep items from the last N days", example = 7 },
+  { name = "owner", type = "string|string[]", description = "Exact owner filter", example = "infra" }
+]
+extract_type = "jq"
+extract_expr = '''
+def as_list($value):
+  if $value == null then []
+  elif ($value | type) == "array" then $value
+  else [$value]
+  end;
+.extract as $extract
+| [
+    .body.items[]
+    | (.owner // "" | tostring) as $owner
+    | select(
+        (($extract.days // null) == null or (.age_days <= ($extract.days | tonumber)))
+        and (
+          ($extract.owner // null) == null
+          or (as_list($extract.owner) | map(tostring) | index($owner)) != null
+        )
+      )
+  ]
+| {total: length}
+'''
 
 [actions.repo]
 description = "Fetch repository information using a shell-sourced token"
 path = "/repo"
 headers = { Authorization = { from = "shell", cmd = "pass demo/token", trim = true } }
-extract = ".body"
+extract_type = "regex"
+extract_pattern = "token=([A-Za-z0-9_-]+)"
+extract_group = 1

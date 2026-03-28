@@ -64,6 +64,187 @@ path = "/"
 	}
 }
 
+func TestLoadConfigRejectsLegacyExtractField(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract = ".body"
+`)
+
+	_, err := loadConfig(configPath)
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsNestedExtractorTable(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+
+[actions.get.extractor]
+type = "jq"
+expr = ".body"
+`)
+
+	_, err := loadConfig(configPath)
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsDuplicateActionInputSpecNames(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extracts = [
+  { name = "days", type = "number" },
+  { name = "days", type = "number" }
+]
+`)
+
+	_, err := loadConfig(configPath)
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsFlatExtractFieldsWithoutType(t *testing.T) {
+	t.Parallel()
+
+	for name, content := range map[string]string{
+		"expr": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract_expr = ".body"
+`,
+		"pattern": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract_pattern = "id=([0-9]+)"
+`,
+		"group": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract_group = 0
+`,
+		"all": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract_all = false
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			configPath := writeConfig(t, content)
+			_, err := loadConfig(configPath)
+			if err == nil || !errors.Is(err, ErrConfig) {
+				t.Fatalf("expected config error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsInvalidFlatExtractorShapes(t *testing.T) {
+	t.Parallel()
+
+	for name, content := range map[string]string{
+		"jq_with_group": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract_type = "jq"
+extract_expr = ".body"
+extract_group = 1
+`,
+		"jq_with_all": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract_type = "jq"
+extract_expr = ".body"
+extract_all = true
+`,
+		"regex_without_pattern": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract_type = "regex"
+`,
+		"unknown_type": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+extract_type = "xml"
+extract_expr = ".body"
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			configPath := writeConfig(t, content)
+			_, err := loadConfig(configPath)
+			if err == nil || !errors.Is(err, ErrConfig) {
+				t.Fatalf("expected config error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigRequiresDescriptions(t *testing.T) {
 	t.Parallel()
 
@@ -233,6 +414,25 @@ func TestParseArgsSupportsRepeatableParams(t *testing.T) {
 	}
 }
 
+func TestParseArgsSupportsExtractJSON(t *testing.T) {
+	t.Parallel()
+
+	req, err := parseArgs([]string{
+		"run", "demo", "list",
+		"--extract", `{"days":7,"group":["WRM","OFFICE"]}`,
+	})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if value, ok := req.Options.ExtractInput["days"].(float64); !ok || value != 7 {
+		t.Fatalf("unexpected extract input: %#v", req.Options.ExtractInput)
+	}
+	groups, ok := req.Options.ExtractInput["group"].([]any)
+	if !ok || len(groups) != 2 || groups[0] != "WRM" || groups[1] != "OFFICE" {
+		t.Fatalf("unexpected extract input groups: %#v", req.Options.ExtractInput)
+	}
+}
+
 func TestParseArgsDefaultsByCommand(t *testing.T) {
 	t.Parallel()
 
@@ -292,6 +492,7 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 		"demo",
 		"--format", "json",
 		"--param", "user=alice",
+		"--extract", `{"days":7}`,
 		"list",
 		"--timeout=5s",
 		"--state", "/tmp/httpx-state",
@@ -318,6 +519,17 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	if req.Options.Params["user"] != "alice" {
 		t.Fatalf("unexpected params: %#v", req.Options.Params)
 	}
+	if req.Options.ExtractInput["days"] != float64(7) {
+		t.Fatalf("unexpected extract input: %#v", req.Options.ExtractInput)
+	}
+
+	req, err = parseArgs([]string{"action", "demo", "list"})
+	if err != nil {
+		t.Fatalf("parseArgs action failed: %v", err)
+	}
+	if req.Command != commandAction || req.Options.Format != formatText {
+		t.Fatalf("unexpected action request: %#v", req)
+	}
 }
 
 func TestParseArgsRejectsInvalidCombinations(t *testing.T) {
@@ -326,8 +538,14 @@ func TestParseArgsRejectsInvalidCombinations(t *testing.T) {
 	for _, args := range [][]string{
 		{"inspect", "--format", "body", "demo", "list"},
 		{"run", "--format", "text", "demo", "list"},
+		{"run", "demo", "list", "--extract", `[]`},
+		{"run", "demo", "list", "--extract", `{"days":`},
+		{"run", "demo", "list", "--extract", `{"days":7}`, "--extract", `{"group":"WRM"}`},
 		{"sites", "--format", "body"},
 		{"sites", "--param", "user=alice"},
+		{"sites", "--extract", `{"days":7}`},
+		{"action", "demo", "list", "--extract", `{"days":7}`},
+		{"login", "demo", "--extract", `{"days":7}`},
 		{"state", "--timeout", "1s", "demo"},
 		{"--state-dir", "/tmp/httpx-state", "sites"},
 		{"demo", "list"},
@@ -773,6 +991,31 @@ path = "/ping"
 	}
 }
 
+func TestCompileRejectsRegexExtractorGroupOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configPath := writeConfig(t, fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.page]
+description = "Read page"
+path = "/page"
+extract_type = "regex"
+extract_pattern = "token=([A-Za-z0-9_-]+)"
+extract_group = 2
+`, server.URL))
+
+	_, err := loadConfig(configPath)
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
+	}
+}
+
 func TestLoginPersistsStateAndRunReusesCookieAndToken(t *testing.T) {
 	t.Setenv("HTTPX_USER", "alice")
 	t.Setenv("HTTPX_PASS", "secret")
@@ -825,7 +1068,8 @@ save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 description = "Load data"
 path = "/data"
 headers = { Authorization = { from = "state", key = "auth.authorization" } }
-extract = ".body.value"
+extract_type = "jq"
+extract_expr = ".body.value"
 `, server.URL))
 
 	stateDir := t.TempDir()
@@ -869,6 +1113,9 @@ extract = ".body.value"
 	if value, ok := env.Extract.(float64); !ok || value != 42 {
 		t.Fatalf("unexpected extract: %#v", env.Extract)
 	}
+	if env.Body != nil {
+		t.Fatalf("expected body to be omitted when extractor is configured, got %#v", env.Body)
+	}
 }
 
 func TestRunSupportsExplicitCookiesFromState(t *testing.T) {
@@ -907,7 +1154,8 @@ save = { "oem.sessionid" = ".body.session_id" }
 description = "Load profile"
 path = "/me"
 cookies = { "oem.sessionid" = { from = "state", key = "oem.sessionid" } }
-extract = ".body.ok"
+extract_type = "jq"
+extract_expr = ".body.ok"
 `, server.URL))
 
 	stateDir := t.TempDir()
@@ -927,6 +1175,9 @@ extract = ".body.ok"
 	}
 	if ok, _ := env.Extract.(bool); !ok {
 		t.Fatalf("unexpected extract: %#v", env.Extract)
+	}
+	if env.Body != nil {
+		t.Fatalf("expected body to be omitted when extractor is configured, got %#v", env.Body)
 	}
 }
 
@@ -1137,6 +1388,251 @@ path = "/ping"
 	}
 }
 
+func TestBodyFormatOutputsJQExtractorResult(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":7,"title":"demo","owner":"alice","noise":"skip"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.repo]
+description = "Load repo"
+path = "/repo"
+extract_type = "jq"
+extract_expr = ".body | {id, title, owner}"
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "repo"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if stdout != `{"id":7,"owner":"alice","title":"demo"}` {
+		t.Fatalf("unexpected extractor output: %q", stdout)
+	}
+}
+
+func TestBodyFormatOutputsJQExtractorUsingExtractInput(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":1,"age_days":2},{"id":2,"age_days":9},{"id":3,"age_days":5}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.summary]
+description = "Load summary"
+path = "/summary"
+extract_type = "jq"
+extract_expr = ".extract as $extract | .body.items | map(select(.age_days <= ($extract.days // 0))) | map(.id)"
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", t.TempDir(),
+		"--format", "body",
+		"run", "demo", "summary",
+		"--extract", `{"days":7}`,
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if stdout != `[1,3]` {
+		t.Fatalf("unexpected extractor output: %q", stdout)
+	}
+}
+
+func TestBodyFormatOutputsRegexExtractorMatches(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("id=12 id=34 id=56"))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.ids]
+description = "Load ids"
+path = "/ids"
+extract_type = "regex"
+extract_pattern = "id=([0-9]+)"
+extract_group = 1
+extract_all = true
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "ids"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if stdout != `["12","34","56"]` {
+		t.Fatalf("unexpected regex extractor output: %q", stdout)
+	}
+}
+
+func TestBodyFormatOutputsRegexExtractorUsingExtractInput(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("group=WRM group=OFFICE"))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.ids]
+description = "Load ids"
+path = "/ids"
+extract_type = "regex"
+extract_pattern = "group=({{extract.group}})"
+extract_group = 1
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", t.TempDir(),
+		"--format", "body",
+		"run", "demo", "ids",
+		"--extract", `{"group":"OFFICE"}`,
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if stdout != `OFFICE` {
+		t.Fatalf("unexpected regex extractor output: %q", stdout)
+	}
+}
+
+func TestBodyFormatRegexExtractorFailsWhenExtractInputMissing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("group=WRM"))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.ids]
+description = "Load ids"
+path = "/ids"
+extract_type = "regex"
+extract_pattern = "group=({{extract.group}})"
+extract_group = 1
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", t.TempDir(),
+		"--format", "body",
+		"run", "demo", "ids",
+	})
+	if exitCode != ExitAssertion {
+		t.Fatalf("expected assertion failure, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if !strings.Contains(stderr, `extract input "group" not provided`) {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestBodyFormatOutputsEmptyWhenExtractorFindsNoMatches(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.ids]
+description = "Load ids"
+path = "/ids"
+extract_type = "jq"
+extract_expr = ".body.items[]?.id"
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "ids"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty extractor output, got %q", stdout)
+	}
+}
+
+func TestInspectOutputsStructuredExtractor(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.secret]
+description = "Secret request"
+path = "/secret"
+params = [{ name = "id", type = "string", required = true, description = "Lookup id", example = "42" }]
+extracts = [{ name = "group", type = "string", description = "Exact group match", example = "WRM" }]
+extract_type = "regex"
+extract_pattern = "token=([A-Za-z0-9_-]+)"
+extract_group = 1
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "secret", "--extract", `{"group":"WRM"}`})
+	if exitCode != ExitSuccess {
+		t.Fatalf("inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	var compiled compiledRequest
+	if err := json.Unmarshal([]byte(stdout), &compiled); err != nil {
+		t.Fatalf("unmarshal inspect output: %v", err)
+	}
+	if compiled.Extractor == nil {
+		t.Fatalf("expected extractor in inspect output")
+	}
+	if compiled.Extractor.Type != "regex" || compiled.Extractor.Pattern != "token=([A-Za-z0-9_-]+)" || compiled.Extractor.Group != 1 {
+		t.Fatalf("unexpected extractor: %#v", compiled.Extractor)
+	}
+	if compiled.ExtractInput["group"] != "WRM" {
+		t.Fatalf("unexpected extract input: %#v", compiled.ExtractInput)
+	}
+	if len(compiled.Params) != 1 || compiled.Params[0].Name != "id" {
+		t.Fatalf("unexpected params metadata: %#v", compiled.Params)
+	}
+	if len(compiled.Extracts) != 1 || compiled.Extracts[0].Name != "group" {
+		t.Fatalf("unexpected extracts metadata: %#v", compiled.Extracts)
+	}
+}
+
 func TestDiscoveryCommandsExposeSummariesOnly(t *testing.T) {
 	configDir := t.TempDir()
 	stateDir := t.TempDir()
@@ -1155,6 +1651,7 @@ path = "/login"
 [actions.profile]
 description = "Load profile"
 path = "/me"
+extracts = [{ name = "group", type = "string", description = "Filter group", example = "WRM" }]
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write alpha config: %v", err)
 	}
@@ -1212,6 +1709,9 @@ path = "/search"
 	if !strings.Contains(stdout, "signin") || !strings.Contains(stdout, "profile") {
 		t.Fatalf("unexpected actions output: %q", stdout)
 	}
+	if !strings.Contains(stdout, "PARAMS") || !strings.Contains(stdout, "EXTRACTS") {
+		t.Fatalf("expected params/extracts columns in actions output: %q", stdout)
+	}
 	if strings.Contains(stdout, "LOGIN") || strings.Contains(stdout, "yes") || strings.Contains(stdout, "no") {
 		t.Fatalf("unexpected login marker in actions output: %q", stdout)
 	}
@@ -1237,6 +1737,31 @@ path = "/search"
 			t.Fatalf("unexpected is_login_action field: %#v", action)
 		}
 	}
+	foundProfile := false
+	for _, item := range actions {
+		action := item.(map[string]any)
+		if action["name"] == "profile" {
+			foundProfile = true
+			if action["extracts"] != float64(1) {
+				t.Fatalf("expected extract count for profile action: %#v", action)
+			}
+		}
+	}
+	if !foundProfile {
+		t.Fatalf("expected profile action in actions response: %#v", actionsResp)
+	}
+
+	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "action", "alpha", "profile"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("action json failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	var actionResp actionResponse
+	if err := json.Unmarshal([]byte(stdout), &actionResp); err != nil {
+		t.Fatalf("unmarshal action output: %v", err)
+	}
+	if actionResp.Action.Name != "profile" || len(actionResp.Action.Extracts) != 1 || actionResp.Action.Extracts[0].Name != "group" {
+		t.Fatalf("unexpected action response: %#v", actionResp)
+	}
 
 	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "state", "alpha"})
 	if exitCode != ExitSuccess {
@@ -1255,8 +1780,6 @@ path = "/search"
 }
 
 func TestMainPrintsVersionCommand(t *testing.T) {
-	t.Parallel()
-
 	oldVersion := buildinfo.Version
 	oldCommit := buildinfo.Commit
 	oldBuildTime := buildinfo.BuildTime
@@ -1282,8 +1805,6 @@ func TestMainPrintsVersionCommand(t *testing.T) {
 }
 
 func TestMainPrintsVersionFlag(t *testing.T) {
-	t.Parallel()
-
 	oldVersion := buildinfo.Version
 	oldCommit := buildinfo.Commit
 	oldBuildTime := buildinfo.BuildTime

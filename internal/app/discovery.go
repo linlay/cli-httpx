@@ -1,10 +1,12 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -35,11 +37,30 @@ type siteResponse struct {
 type actionSummary struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Params      int    `json:"params"`
+	Extracts    int    `json:"extracts"`
 }
 
 type actionsResponse struct {
 	Site    string          `json:"site"`
 	Actions []actionSummary `json:"actions"`
+}
+
+type actionDetail struct {
+	Site         string            `json:"site"`
+	Name         string            `json:"name"`
+	Description  string            `json:"description"`
+	Method       string            `json:"method"`
+	Path         string            `json:"path"`
+	ExpectStatus []int             `json:"expect_status,omitempty"`
+	Extractor    *extractorSpec    `json:"extractor,omitempty"`
+	Params       []actionInputSpec `json:"params"`
+	Extracts     []actionInputSpec `json:"extracts"`
+	SaveKeys     []string          `json:"save_keys"`
+}
+
+type actionResponse struct {
+	Action actionDetail `json:"action"`
 }
 
 type stateSummary struct {
@@ -144,6 +165,8 @@ func (rt *Runtime) runListActions(req commandRequest) int {
 		items = append(items, actionSummary{
 			Name:        name,
 			Description: act.Description,
+			Params:      len(act.Params),
+			Extracts:    len(act.Extracts),
 		})
 	}
 
@@ -155,6 +178,54 @@ func (rt *Runtime) runListActions(req commandRequest) int {
 		return ExitSuccess
 	}
 	if err := writeActionsText(rt.stdout, req.Site, items); err != nil {
+		fmt.Fprintf(rt.stderr, "error: %v\n", err)
+		return ExitExecution
+	}
+	return ExitSuccess
+}
+
+func (rt *Runtime) runShowAction(req commandRequest) int {
+	cfg, _, err := loadSiteConfig(req.Options.ConfigDir, req.Site)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+
+	act, err := selectAction(cfg, req.Site, req.Action)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+	merged, err := mergeAction(req.Action, cfg, act, 0)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+
+	saveKeys := make([]string, 0, len(merged.Save))
+	for key := range merged.Save {
+		saveKeys = append(saveKeys, key)
+	}
+	sort.Strings(saveKeys)
+
+	detail := actionDetail{
+		Site:         req.Site,
+		Name:         req.Action,
+		Description:  merged.Description,
+		Method:       merged.Method,
+		Path:         merged.Path,
+		ExpectStatus: append([]int(nil), merged.ExpectStatus...),
+		Extractor:    cloneExtractorSpec(merged.Extractor),
+		Params:       cloneActionInputSpecs(merged.Params),
+		Extracts:     cloneActionInputSpecs(merged.Extracts),
+		SaveKeys:     saveKeys,
+	}
+
+	if req.Options.Format == formatJSON {
+		if err := writeJSON(rt.stdout, actionResponse{Action: detail}); err != nil {
+			fmt.Fprintf(rt.stderr, "error: %v\n", err)
+			return ExitExecution
+		}
+		return ExitSuccess
+	}
+	if err := writeActionText(rt.stdout, detail); err != nil {
 		fmt.Fprintf(rt.stderr, "error: %v\n", err)
 		return ExitExecution
 	}
@@ -258,15 +329,91 @@ func writeActionsText(w io.Writer, site string, actions []actionSummary) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ACTION\tDESCRIPTION"); err != nil {
+	if _, err := fmt.Fprintln(tw, "ACTION\tDESCRIPTION\tPARAMS\tEXTRACTS"); err != nil {
 		return err
 	}
 	for _, action := range actions {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\n", action.Name, action.Description); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%d\t%d\n", action.Name, action.Description, action.Params, action.Extracts); err != nil {
 			return err
 		}
 	}
 	return tw.Flush()
+}
+
+func writeActionText(w io.Writer, detail actionDetail) error {
+	if _, err := fmt.Fprintf(w,
+		"site: %s\naction: %s\ndescription: %s\nmethod: %s\npath: %s\nextractor: %s\nexpect_status: %s\nsave_keys: %s\n",
+		detail.Site,
+		detail.Name,
+		detail.Description,
+		detail.Method,
+		detail.Path,
+		describeExtractor(detail.Extractor),
+		describeStatuses(detail.ExpectStatus),
+		describeSaveKeys(detail.SaveKeys),
+	); err != nil {
+		return err
+	}
+	if err := writeInputSpecsText(w, "params", detail.Params); err != nil {
+		return err
+	}
+	return writeInputSpecsText(w, "extracts", detail.Extracts)
+}
+
+func writeInputSpecsText(w io.Writer, label string, specs []actionInputSpec) error {
+	if _, err := fmt.Fprintf(w, "%s:\n", label); err != nil {
+		return err
+	}
+	if len(specs) == 0 {
+		_, err := fmt.Fprintln(w, "  -")
+		return err
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "NAME\tTYPE\tREQUIRED\tDESCRIPTION\tEXAMPLE"); err != nil {
+		return err
+	}
+	for _, spec := range specs {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%t\t%s\t%s\n", spec.Name, emptyText(spec.Type), spec.Required, emptyText(spec.Description), describeExample(spec.Example)); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func describeExtractor(spec *extractorSpec) string {
+	if spec == nil {
+		return "-"
+	}
+	return spec.Type
+}
+
+func describeStatuses(statuses []int) string {
+	if len(statuses) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		parts = append(parts, fmt.Sprintf("%d", status))
+	}
+	return strings.Join(parts, ",")
+}
+
+func describeSaveKeys(keys []string) string {
+	if len(keys) == 0 {
+		return "-"
+	}
+	return strings.Join(keys, ",")
+}
+
+func describeExample(value any) string {
+	if value == nil {
+		return "-"
+	}
+	rendered, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(rendered)
 }
 
 func writeStateText(w io.Writer, site string, state stateSummary) error {
