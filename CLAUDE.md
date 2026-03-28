@@ -160,7 +160,8 @@ httpx inspect <site> <action>
 
 默认目录规则：
 
-- 默认目录为 `~/.local/httpx-state`
+- 如果设置了 `XDG_STATE_HOME`，目录为 `$XDG_STATE_HOME/httpx`
+- 否则目录为 `~/.local/httpx-state`
 - 也可以用 `--state <path>` 覆盖默认目录
 
 运行约定：
@@ -168,7 +169,8 @@ httpx inspect <site> <action>
 - 不建议把 `--state` 指到 `/tmp/...`，因为这类目录常常跟着沙箱或容器生命周期一起销毁
 - 推荐优先使用用户级持久目录：`~/.local/httpx-state`
 - 如果需要显式路径，推荐 `--state "$HOME/.local/httpx-state"`
-- 不建议默认使用 `~/.secret/httpx` 或 `~/.secret/httpx-state`；这里保存的是 mutable runtime state，不是静态 secret 配置
+- `from = "file"` 读取的是任意文件路径；静态 secret 文件推荐放在 `~/.local/share/httpx/secrets/`
+- 不建议把 mutable runtime state 和静态 secret 文件混放
 - 在容器里能否持久化，关键取决于 `HOME` 或 `--state` 是否绑定到宿主机目录或持久卷，而不是路径名本身
 
 每个 site 对应一个 state 文件：

@@ -25,7 +25,7 @@ extract = ".body"
 [actions.search]
 description = "Search public resources"
 path = "/search"
-query = { q = "httpx", api_key = { from = "file", path = "~/.secrets/demo-api-key", trim = true } }
+query = { q = "httpx", api_key = { from = "file", path = "~/.local/share/httpx/secrets/demo-api-key", trim = true } }
 extract = ".body.items[]?.id"
 
 [actions.repo]

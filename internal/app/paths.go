@@ -64,6 +64,9 @@ func listConfigSites(configDir string) ([]string, error) {
 }
 
 func defaultStateDir() string {
+	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
+		return filepath.Join(dir, "httpx")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".httpx-state"
