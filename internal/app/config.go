@@ -26,6 +26,7 @@ func (d *durationValue) UnmarshalText(text []byte) error {
 }
 
 type configFile struct {
+	Description string            `toml:"description"`
 	BaseURL     string            `toml:"base_url"`
 	LoginAction string            `toml:"login_action"`
 	Proxy       any               `toml:"proxy"`
@@ -39,6 +40,7 @@ type configFile struct {
 }
 
 type action struct {
+	Description  string            `toml:"description"`
 	Method       string            `toml:"method"`
 	Path         string            `toml:"path"`
 	Proxy        any               `toml:"proxy"`
@@ -93,6 +95,9 @@ func validateConfig(cfg *configFile) error {
 	if cfg.Version != 1 {
 		return fmt.Errorf("%w: unsupported config version %d", ErrConfig, cfg.Version)
 	}
+	if strings.TrimSpace(cfg.Description) == "" {
+		return fmt.Errorf("%w: description is required", ErrConfig)
+	}
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		return fmt.Errorf("%w: base_url is required", ErrConfig)
 	}
@@ -100,6 +105,9 @@ func validateConfig(cfg *configFile) error {
 		return fmt.Errorf("%w: actions is required", ErrConfig)
 	}
 	for actionName, act := range cfg.Actions {
+		if strings.TrimSpace(act.Description) == "" {
+			return fmt.Errorf("%w: actions.%s.description is required", ErrConfig, actionName)
+		}
 		if strings.TrimSpace(act.Path) == "" {
 			return fmt.Errorf("%w: actions.%s.path is required", ErrConfig, actionName)
 		}
@@ -118,10 +126,10 @@ func validateConfig(cfg *configFile) error {
 	return nil
 }
 
-func selectAction(cfg *configFile, profileName, actionName string) (action, error) {
+func selectAction(cfg *configFile, siteName, actionName string) (action, error) {
 	act, ok := cfg.Actions[actionName]
 	if !ok {
-		return action{}, fmt.Errorf("%w: unknown action %q for profile %q", ErrConfig, actionName, profileName)
+		return action{}, fmt.Errorf("%w: unknown action %q for site %q", ErrConfig, actionName, siteName)
 	}
 	return act, nil
 }

@@ -23,9 +23,11 @@ func TestLoadConfigRejectsUnknownField(t *testing.T) {
 
 	configPath := writeConfig(t, `
 version = 1
+description = "Demo site"
 base_url = "https://example.com"
 
 [actions.get]
+description = "Fetch home"
 path = "/"
 bogus = true
 `)
@@ -44,6 +46,7 @@ func TestLoadConfigRejectsLegacyProfilesWrapper(t *testing.T) {
 
 	configPath := writeConfig(t, `
 version = 1
+description = "Demo site"
 
 [profiles.demo]
 base_url = "https://example.com"
@@ -61,6 +64,37 @@ path = "/"
 	}
 }
 
+func TestLoadConfigRequiresDescriptions(t *testing.T) {
+	t.Parallel()
+
+	for name, content := range map[string]string{
+		"site": `
+version = 1
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = "/"
+`,
+		"action": `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+path = "/"
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			configPath := writeConfig(t, content)
+			_, err := loadConfig(configPath)
+			if err == nil || !errors.Is(err, ErrConfig) {
+				t.Fatalf("expected config error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestCompileMergesDefaultsActionAndCLIOverride(t *testing.T) {
 	t.Parallel()
 
@@ -69,19 +103,21 @@ func TestCompileMergesDefaultsActionAndCLIOverride(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 timeout = "2s"
 retries = 1
 
 [headers]
 X-Base = "base"
-X-Shared = "profile"
+X-Shared = "site"
 
 [query]
 scope = "base"
 region = "cn"
 
 [actions.info]
+description = "Load info"
 path = "/v1/info"
 timeout = "1s"
 retries = 2
@@ -97,7 +133,8 @@ query = { scope = "action" }
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 
 	req := commandRequest{
-		Profile: "demo",
+		Command: commandRun,
+		Site:    "demo",
 		Action:  "info",
 		Options: globalOptions{
 			StateDir: t.TempDir(),
@@ -184,9 +221,9 @@ func TestParseArgsSupportsRepeatableParams(t *testing.T) {
 	t.Parallel()
 
 	req, err := parseArgs([]string{
+		"run", "demo", "list",
 		"--param", "user=alice",
 		"--param", "page=2",
-		"demo", "list",
 	})
 	if err != nil {
 		t.Fatalf("parseArgs failed: %v", err)
@@ -196,10 +233,10 @@ func TestParseArgsSupportsRepeatableParams(t *testing.T) {
 	}
 }
 
-func TestParseArgsDefaultsToBodyExceptInspect(t *testing.T) {
+func TestParseArgsDefaultsByCommand(t *testing.T) {
 	t.Parallel()
 
-	runReq, err := parseArgs([]string{"demo", "list"})
+	runReq, err := parseArgs([]string{"run", "demo", "list"})
 	if err != nil {
 		t.Fatalf("parseArgs run failed: %v", err)
 	}
@@ -207,12 +244,20 @@ func TestParseArgsDefaultsToBodyExceptInspect(t *testing.T) {
 		t.Fatalf("expected run default format body, got %q", runReq.Options.Format)
 	}
 
-	inspectReq, err := parseArgs([]string{"--inspect", "demo", "list"})
+	inspectReq, err := parseArgs([]string{"inspect", "demo", "list"})
 	if err != nil {
 		t.Fatalf("parseArgs inspect failed: %v", err)
 	}
 	if inspectReq.Options.Format != formatJSON {
 		t.Fatalf("expected inspect default format json, got %q", inspectReq.Options.Format)
+	}
+
+	sitesReq, err := parseArgs([]string{"sites"})
+	if err != nil {
+		t.Fatalf("parseArgs sites failed: %v", err)
+	}
+	if sitesReq.Options.Format != formatText {
+		t.Fatalf("expected sites default format text, got %q", sitesReq.Options.Format)
 	}
 }
 
@@ -220,19 +265,19 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	t.Parallel()
 
 	req, err := parseArgs([]string{
+		"inspect",
 		"demo",
 		"--format", "json",
-		"--inspect",
 		"--param", "user=alice",
 		"list",
 		"--timeout=5s",
-		"--state-dir", "/tmp/httpx-state",
+		"--state", "/tmp/httpx-state",
 		"--config", "/tmp/httpx-config",
 	})
 	if err != nil {
 		t.Fatalf("parseArgs failed: %v", err)
 	}
-	if req.Profile != "demo" || req.Action != "list" {
+	if req.Command != commandInspect || req.Site != "demo" || req.Action != "list" {
 		t.Fatalf("unexpected request: %#v", req)
 	}
 	if req.Options.Format != formatJSON {
@@ -247,56 +292,49 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	if req.Options.ConfigDir != "/tmp/httpx-config" {
 		t.Fatalf("unexpected config dir: %q", req.Options.ConfigDir)
 	}
-	if !req.Options.Inspect {
-		t.Fatalf("expected inspect mode")
-	}
 	if req.Options.Params["user"] != "alice" {
 		t.Fatalf("unexpected params: %#v", req.Options.Params)
 	}
 }
 
-func TestParseArgsRejectsInspectBodyFormat(t *testing.T) {
-	t.Parallel()
-
-	if _, err := parseArgs([]string{"--inspect", "--format", "body", "demo", "list"}); err == nil {
-		t.Fatal("expected inspect/body parse error")
-	}
-}
-
-func TestParseArgsRejectsLegacyCommands(t *testing.T) {
+func TestParseArgsRejectsInvalidCombinations(t *testing.T) {
 	t.Parallel()
 
 	for _, args := range [][]string{
-		{"run", "demo", "list"},
-		{"login", "demo"},
-		{"inspect", "demo", "list"},
+		{"inspect", "--format", "body", "demo", "list"},
+		{"run", "--format", "text", "demo", "list"},
+		{"sites", "--format", "body"},
+		{"sites", "--param", "user=alice"},
+		{"state", "--timeout", "1s", "demo"},
+		{"--state-dir", "/tmp/httpx-state", "sites"},
+		{"demo", "list"},
 	} {
 		if _, err := parseArgs(args); err == nil {
-			t.Fatalf("expected parse error for legacy args %#v", args)
+			t.Fatalf("expected parse error for args %#v", args)
 		}
 	}
 }
 
-func TestParseArgsRejectsVersionAsProfile(t *testing.T) {
+func TestParseArgsRejectsReservedSiteName(t *testing.T) {
 	t.Parallel()
 
-	if _, err := parseArgs([]string{"version", "list"}); err == nil {
-		t.Fatal("expected parse error for reserved version command")
-	}
-}
-
-func TestParseArgsRejectsVersionFlagMixedWithCommand(t *testing.T) {
-	t.Parallel()
-
-	if _, err := parseArgs([]string{"--version", "demo", "list"}); err == nil {
-		t.Fatal("expected parse error for mixed --version")
+	if _, err := parseArgs([]string{"run", "version", "list"}); err == nil {
+		t.Fatal("expected reserved site parse error")
 	}
 }
 
 func TestResolveConfigPathRejectsFile(t *testing.T) {
 	t.Parallel()
 
-	filePath := writeConfig(t, "version = 1\nbase_url = \"https://example.com\"\n[actions.me]\npath = \"/me\"\n")
+	filePath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.me]
+description = "Profile"
+path = "/me"
+`)
 	_, err := resolveConfigPath(filePath, "demo")
 	if err == nil || !errors.Is(err, ErrConfig) {
 		t.Fatalf("expected config dir error, got %v", err)
@@ -329,9 +367,11 @@ func TestCompileSupportsParamAndLiteralSources(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 
 [actions.search]
+description = "Search site"
 path = "/search"
 headers = { X-Mode = { from = "literal", value = "agent" } }
 query = { q = { from = "param", key = "query" }, page = { from = "param", key = "page", default = 1 } }
@@ -344,7 +384,8 @@ body = { keyword = { from = "param", key = "query" }, source = { from = "literal
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Profile: "demo",
+		Command: commandRun,
+		Site:    "demo",
 		Action:  "search",
 		Options: globalOptions{
 			StateDir: t.TempDir(),
@@ -386,9 +427,11 @@ func TestCompileRejectsInvalidParamTypeForDefaultSample(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 
 [actions.search]
+description = "Search site"
 path = "/search"
 body = { id = { from = "param", key = "id", default = 9062 } }
 `, server.URL))
@@ -399,7 +442,8 @@ body = { id = { from = "param", key = "id", default = 9062 } }
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Profile: "demo",
+		Command: commandRun,
+		Site:    "demo",
 		Action:  "search",
 		Options: globalOptions{
 			StateDir: t.TempDir(),
@@ -424,10 +468,12 @@ func TestCompileSupportsCookies(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 cookies = { locale = "zh-CN" }
 
 [actions.me]
+description = "Profile"
 path = "/me"
 cookies = { session = { from = "state", key = "auth.session" }, mode = { from = "literal", value = "agent" } }
 `, server.URL))
@@ -438,7 +484,8 @@ cookies = { session = { from = "state", key = "auth.session" }, mode = { from = 
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Profile: "demo",
+		Command: commandRun,
+		Site:    "demo",
 		Action:  "me",
 		Options: globalOptions{
 			StateDir: t.TempDir(),
@@ -455,7 +502,7 @@ cookies = { session = { from = "state", key = "auth.session" }, mode = { from = 
 	}
 }
 
-func TestCompileSupportsProfileAndActionProxy(t *testing.T) {
+func TestCompileSupportsSiteAndActionProxy(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -463,13 +510,16 @@ func TestCompileSupportsProfileAndActionProxy(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 proxy = "http://127.0.0.1:8001"
 
 [actions.default]
+description = "Default path"
 path = "/default"
 
 [actions.override]
+description = "Override path"
 path = "/override"
 proxy = "http://127.0.0.1:8002"
 `, server.URL))
@@ -481,7 +531,8 @@ proxy = "http://127.0.0.1:8002"
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 
 	defaultReq := commandRequest{
-		Profile: "demo",
+		Command: commandRun,
+		Site:    "demo",
 		Action:  "default",
 		Options: globalOptions{
 			StateDir: t.TempDir(),
@@ -514,10 +565,12 @@ func TestCompileSupportsDynamicProxySource(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 proxy = { from = "env", key = "HTTPX_PROXY" }
 
 [actions.default]
+description = "Default path"
 path = "/default"
 `, server.URL))
 
@@ -527,7 +580,8 @@ path = "/default"
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Profile: "demo",
+		Command: commandRun,
+		Site:    "demo",
 		Action:  "default",
 		Options: globalOptions{
 			StateDir: t.TempDir(),
@@ -552,10 +606,12 @@ func TestCompileRejectsInvalidProxyURL(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 proxy = "127.0.0.1:8001"
 
 [actions.default]
+description = "Default path"
 path = "/default"
 `, server.URL))
 
@@ -565,7 +621,8 @@ path = "/default"
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Profile: "demo",
+		Command: commandRun,
+		Site:    "demo",
 		Action:  "default",
 		Options: globalOptions{
 			StateDir: t.TempDir(),
@@ -587,9 +644,11 @@ func TestCompileFormEncodesNestedObjectsAsJSONString(t *testing.T) {
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 
 [actions.submit]
+description = "Submit login"
 method = "POST"
 path = "/login"
 form = { data = { UserId = "alice", Password = "secret", SystemType = "100", ClientType = "2" } }
@@ -601,7 +660,8 @@ form = { data = { UserId = "alice", Password = "secret", SystemType = "100", Cli
 	}
 	rt := NewRuntime(ioDiscard{}, ioDiscard{})
 	req := commandRequest{
-		Profile: "demo",
+		Command: commandRun,
+		Site:    "demo",
 		Action:  "submit",
 		Options: globalOptions{
 			StateDir: t.TempDir(),
@@ -657,7 +717,7 @@ func TestResolverReportsMissingEnvAndShellTimeout(t *testing.T) {
 	}
 }
 
-func TestRunUsesDefaultProfileConfigPath(t *testing.T) {
+func TestRunUsesDefaultSiteConfigPath(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("pong"))
 	}))
@@ -671,15 +731,17 @@ func TestRunUsesDefaultProfileConfigPath(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(configDir, "demo.toml"), []byte(strings.TrimSpace(fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 
 [actions.ping]
+description = "Ping site"
 path = "/ping"
 `, server.URL))+"\n"), 0o600); err != nil {
-		t.Fatalf("write profile config: %v", err)
+		t.Fatalf("write site config: %v", err)
 	}
 
-	stdout, stderr, exitCode := runMain(t, []string{"demo", "ping"})
+	stdout, stderr, exitCode := runMain(t, []string{"run", "demo", "ping"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -725,23 +787,26 @@ func TestLoginPersistsStateAndRunReusesCookieAndToken(t *testing.T) {
 
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 login_action = "login_request"
 
 [actions.login_request]
+description = "Sign in"
 method = "POST"
 path = "/login"
 form = { username = { from = "env", key = "HTTPX_USER" }, password = { from = "env", key = "HTTPX_PASS" } }
 save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 
 [actions.data]
+description = "Load data"
 path = "/data"
 headers = { Authorization = { from = "state", key = "auth.authorization" } }
 extract = ".body.value"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", stateDir, "--format", "json", "demo", "login"})
+	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed: exit=%d stderr=%s stdout=%s", exitCode, loginStderr, loginStdout)
 	}
@@ -760,7 +825,7 @@ extract = ".body.value"
 		t.Fatalf("expected last_login to be set")
 	}
 
-	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", stateDir, "--format", "json", "demo", "data"})
+	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "run", "demo", "data"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, runStderr, runStdout)
 	}
@@ -774,6 +839,9 @@ extract = ".body.value"
 	}
 	if env.Action != "data" {
 		t.Fatalf("unexpected action: %#v", env.Action)
+	}
+	if env.Site != "demo" {
+		t.Fatalf("unexpected site: %#v", env.Site)
 	}
 	if value, ok := env.Extract.(float64); !ok || value != 42 {
 		t.Fatalf("unexpected extract: %#v", env.Extract)
@@ -802,27 +870,30 @@ func TestRunSupportsExplicitCookiesFromState(t *testing.T) {
 
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 login_action = "login_request"
 
 [actions.login_request]
+description = "Sign in"
 method = "POST"
 path = "/login"
 save = { "oem.sessionid" = ".body.session_id" }
 
 [actions.me]
+description = "Load profile"
 path = "/me"
 cookies = { "oem.sessionid" = { from = "state", key = "oem.sessionid" } }
 extract = ".body.ok"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	_, _, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", stateDir, "--format", "json", "demo", "login"})
+	_, _, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed with exit=%d", exitCode)
 	}
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", stateDir, "--format", "json", "demo", "me"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "run", "demo", "me"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -844,9 +915,11 @@ func TestInspectRedactsDynamicValues(t *testing.T) {
 
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 
 [actions.secret]
+description = "Secret request"
 method = "POST"
 path = "/secret"
 proxy = "http://alice:secret@proxy.example:8001"
@@ -855,7 +928,7 @@ query = { token = { from = "env", key = "HTTPX_SECRET" } }
 body = { nested = { from = "env", key = "HTTPX_SECRET" } }
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--inspect", "demo", "secret"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "secret"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -887,14 +960,16 @@ func TestInspectRevealShowsProxyCredentials(t *testing.T) {
 
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 
 [actions.secret]
+description = "Secret request"
 path = "/secret"
 proxy = "http://alice:secret@proxy.example:8001"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--inspect", "--reveal", "demo", "secret"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "--reveal", "demo", "secret"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -951,14 +1026,16 @@ func TestRuntimeUsesExplicitProxy(t *testing.T) {
 
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 proxy = %q
 
 [actions.ping]
+description = "Ping site"
 path = "/ping"
 `, origin.URL, proxy.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", t.TempDir(), "--format", "body", "demo", "ping"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "ping"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -982,13 +1059,15 @@ func TestAssertionFailureReturnsStructuredEnvelope(t *testing.T) {
 
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 
 [actions.fail]
+description = "Fail action"
 path = "/fail"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", t.TempDir(), "--format", "json", "demo", "fail"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "json", "run", "demo", "fail"})
 	if exitCode != ExitAssertion {
 		t.Fatalf("expected assertion exit code, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1003,6 +1082,9 @@ path = "/fail"
 	if env.Error == nil || env.Error.Code != "assertion_error" {
 		t.Fatalf("expected assertion error envelope, got %#v", env.Error)
 	}
+	if env.Site != "demo" {
+		t.Fatalf("expected site in envelope, got %#v", env.Site)
+	}
 }
 
 func TestBodyFormatOutputsRawBody(t *testing.T) {
@@ -1015,18 +1097,109 @@ func TestBodyFormatOutputsRawBody(t *testing.T) {
 
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
+description = "Demo site"
 base_url = %q
 
 [actions.ping]
+description = "Ping site"
 path = "/ping"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state-dir", t.TempDir(), "--format", "body", "demo", "ping"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "ping"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
 	if stdout != "pong" {
 		t.Fatalf("unexpected body output: %q", stdout)
+	}
+}
+
+func TestDiscoveryCommandsExposeSummariesOnly(t *testing.T) {
+	configDir := t.TempDir()
+	stateDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(configDir, "alpha.toml"), []byte(strings.TrimSpace(`
+version = 1
+description = "Alpha site"
+base_url = "https://alpha.example.com"
+login_action = "signin"
+
+[actions.signin]
+description = "Sign in"
+method = "POST"
+path = "/login"
+
+[actions.profile]
+description = "Load profile"
+path = "/me"
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write alpha config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "beta.toml"), []byte(strings.TrimSpace(`
+version = 1
+description = "Beta site"
+base_url = "https://beta.example.com"
+
+[actions.search]
+description = "Search beta"
+path = "/search"
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write beta config: %v", err)
+	}
+
+	alphaState := &profileState{
+		Values:    map[string]string{"auth.token": "secret-value"},
+		Cookies:   []storedCookie{{Name: "session", Value: "abc"}},
+		LastLogin: "2026-03-28T10:00:00Z",
+	}
+	if err := saveState(stateDir, "alpha", alphaState); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "sites"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("sites failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if !strings.Contains(stdout, "alpha") || !strings.Contains(stdout, "Alpha site") || !strings.Contains(stdout, "yes") {
+		t.Fatalf("unexpected sites output: %q", stdout)
+	}
+	if !strings.Contains(stdout, "beta") || !strings.Contains(stdout, "no") {
+		t.Fatalf("unexpected sites output: %q", stdout)
+	}
+
+	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "site", "alpha"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("site failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	var siteResp siteResponse
+	if err := json.Unmarshal([]byte(stdout), &siteResp); err != nil {
+		t.Fatalf("unmarshal site output: %v", err)
+	}
+	if siteResp.Site.Name != "alpha" || siteResp.Site.State.SavedValues != 1 || !siteResp.Site.State.Exists {
+		t.Fatalf("unexpected site response: %#v", siteResp)
+	}
+
+	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "actions", "alpha"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("actions failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if !strings.Contains(stdout, "signin") || !strings.Contains(stdout, "yes") || !strings.Contains(stdout, "profile") {
+		t.Fatalf("unexpected actions output: %q", stdout)
+	}
+
+	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "state", "alpha"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("state failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if strings.Contains(stdout, "secret-value") || strings.Contains(stdout, "abc") {
+		t.Fatalf("state output leaked secret values: %q", stdout)
+	}
+	var stateResp stateResponse
+	if err := json.Unmarshal([]byte(stdout), &stateResp); err != nil {
+		t.Fatalf("unmarshal state output: %v", err)
+	}
+	if !stateResp.State.Exists || stateResp.State.Cookies != 1 || stateResp.State.SavedValues != 1 {
+		t.Fatalf("unexpected state response: %#v", stateResp)
 	}
 }
 
@@ -1100,7 +1273,7 @@ func writeProfileConfig(t *testing.T, profile, content string) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, profile+".toml")
 	if err := os.WriteFile(path, []byte(strings.TrimSpace(content)+"\n"), 0o600); err != nil {
-		t.Fatalf("write profile config: %v", err)
+		t.Fatalf("write site config: %v", err)
 	}
 	return dir
 }

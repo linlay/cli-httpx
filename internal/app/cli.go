@@ -59,7 +59,6 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 func parseArgs(args []string) (commandRequest, error) {
 	opts := globalOptions{
 		ConfigDir: defaultConfigDir(),
-		Format:    formatBody,
 		StateDir:  defaultStateDir(),
 	}
 	rest, formatSet, err := parseGlobalArgs(args, &opts)
@@ -69,27 +68,89 @@ func parseArgs(args []string) (commandRequest, error) {
 	if len(rest) == 0 {
 		return commandRequest{}, flag.ErrHelp
 	}
-	if len(rest) != 2 {
-		return commandRequest{}, fmt.Errorf("usage: httpx [global flags] [--inspect] <profile> <action>")
-	}
-	switch rest[0] {
-	case "run", "login", "inspect", "version":
-		return commandRequest{}, fmt.Errorf("usage: httpx [global flags] [--inspect] <profile> <action>")
-	}
 
-	req := commandRequest{
-		Profile: rest[0],
-		Action:  rest[1],
-		Options: opts,
+	cmd := commandKind(rest[0])
+	switch cmd {
+	case commandRun:
+		if len(rest) != 3 {
+			return commandRequest{}, usageError()
+		}
+		req := commandRequest{Command: cmd, Site: rest[1], Action: rest[2], Options: opts}
+		if err := validateSiteName(req.Site); err != nil {
+			return commandRequest{}, err
+		}
+		if !formatSet {
+			req.Options.Format = formatBody
+		}
+		if err := validateCommandOptions(&req, formatSet); err != nil {
+			return commandRequest{}, err
+		}
+		return req, nil
+	case commandInspect:
+		if len(rest) != 3 {
+			return commandRequest{}, usageError()
+		}
+		req := commandRequest{Command: cmd, Site: rest[1], Action: rest[2], Options: opts}
+		if err := validateSiteName(req.Site); err != nil {
+			return commandRequest{}, err
+		}
+		if !formatSet {
+			req.Options.Format = formatJSON
+		}
+		if err := validateCommandOptions(&req, formatSet); err != nil {
+			return commandRequest{}, err
+		}
+		return req, nil
+	case commandLogin:
+		if len(rest) != 2 {
+			return commandRequest{}, usageError()
+		}
+		req := commandRequest{Command: cmd, Site: rest[1], Options: opts}
+		if err := validateSiteName(req.Site); err != nil {
+			return commandRequest{}, err
+		}
+		if !formatSet {
+			req.Options.Format = formatBody
+		}
+		if err := validateCommandOptions(&req, formatSet); err != nil {
+			return commandRequest{}, err
+		}
+		return req, nil
+	case commandSites:
+		if len(rest) != 1 {
+			return commandRequest{}, usageError()
+		}
+		req := commandRequest{Command: cmd, Options: opts}
+		if !formatSet {
+			req.Options.Format = formatText
+		}
+		if err := validateCommandOptions(&req, formatSet); err != nil {
+			return commandRequest{}, err
+		}
+		return req, nil
+	case commandSite, commandActions, commandState:
+		if len(rest) != 2 {
+			return commandRequest{}, usageError()
+		}
+		req := commandRequest{Command: cmd, Site: rest[1], Options: opts}
+		if err := validateSiteName(req.Site); err != nil {
+			return commandRequest{}, err
+		}
+		if !formatSet {
+			req.Options.Format = formatText
+		}
+		if err := validateCommandOptions(&req, formatSet); err != nil {
+			return commandRequest{}, err
+		}
+		return req, nil
+	case "help":
+		if len(rest) != 1 {
+			return commandRequest{}, usageError()
+		}
+		return commandRequest{}, flag.ErrHelp
+	default:
+		return commandRequest{}, usageError()
 	}
-
-	if req.Options.Inspect && !formatSet {
-		req.Options.Format = formatJSON
-	}
-	if req.Options.Inspect && formatSet && opts.Format == formatBody {
-		return commandRequest{}, fmt.Errorf("--format body is not supported with inspect")
-	}
-	return req, nil
 }
 
 func isVersionCommand(args []string) bool {
@@ -107,8 +168,6 @@ func parseGlobalArgs(args []string, opts *globalOptions) ([]string, bool, error)
 			return nil, false, flag.ErrHelp
 		case arg == "--reveal":
 			opts.Reveal = true
-		case arg == "--inspect":
-			opts.Inspect = true
 		case arg == "--config":
 			value, next, err := requireFlagValue(args, i, "--config")
 			if err != nil {
@@ -151,15 +210,15 @@ func parseGlobalArgs(args []string, opts *globalOptions) ([]string, bool, error)
 				return nil, false, fmt.Errorf("invalid --timeout %q: %v", value, err)
 			}
 			opts.Timeout = timeout
-		case arg == "--state-dir":
-			value, next, err := requireFlagValue(args, i, "--state-dir")
+		case arg == "--state":
+			value, next, err := requireFlagValue(args, i, "--state")
 			if err != nil {
 				return nil, false, err
 			}
 			opts.StateDir = value
 			i = next
-		case strings.HasPrefix(arg, "--state-dir="):
-			opts.StateDir = strings.TrimPrefix(arg, "--state-dir=")
+		case strings.HasPrefix(arg, "--state="):
+			opts.StateDir = strings.TrimPrefix(arg, "--state=")
 		case arg == "--param":
 			value, next, err := requireFlagValue(args, i, "--param")
 			if err != nil {
@@ -193,7 +252,7 @@ func requireFlagValue(args []string, index int, name string) (string, int, error
 
 func setFormat(opts *globalOptions, value string) error {
 	switch outputFormat(value) {
-	case formatJSON, formatBody:
+	case formatText, formatJSON, formatBody:
 		opts.Format = outputFormat(value)
 		return nil
 	default:
@@ -201,24 +260,93 @@ func setFormat(opts *globalOptions, value string) error {
 	}
 }
 
+func validateCommandOptions(req *commandRequest, formatSet bool) error {
+	switch req.Command {
+	case commandRun, commandLogin:
+		if req.Options.Format != formatBody && req.Options.Format != formatJSON {
+			return fmt.Errorf("--format %s is not supported with %s", req.Options.Format, req.Command)
+		}
+	case commandInspect:
+		if req.Options.Format != formatJSON {
+			return fmt.Errorf("--format %s is not supported with inspect", req.Options.Format)
+		}
+	case commandSites, commandSite, commandActions, commandState:
+		if req.Options.Format != formatText && req.Options.Format != formatJSON {
+			return fmt.Errorf("--format %s is not supported with %s", req.Options.Format, req.Command)
+		}
+		if req.Options.Timeout > 0 {
+			return fmt.Errorf("--timeout is not supported with %s", req.Command)
+		}
+		if len(req.Options.Params) > 0 {
+			return fmt.Errorf("--param is not supported with %s", req.Command)
+		}
+		if req.Options.Reveal {
+			return fmt.Errorf("--reveal is not supported with %s", req.Command)
+		}
+	}
+
+	if req.Command != commandInspect && req.Options.Reveal {
+		return fmt.Errorf("--reveal is only supported with inspect")
+	}
+	if !formatSet && req.Options.Format == "" {
+		return fmt.Errorf("internal error: format not set")
+	}
+	return nil
+}
+
+func usageError() error {
+	return fmt.Errorf("usage: httpx <subcommand> [args]")
+}
+
+func validateSiteName(site string) error {
+	site = strings.TrimSpace(site)
+	if site == "" {
+		return fmt.Errorf("%w: site is required", ErrConfig)
+	}
+	if isReservedWord(site) {
+		return fmt.Errorf("%w: site name %q is reserved", ErrConfig, site)
+	}
+	return nil
+}
+
+func isReservedWord(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "run", "inspect", "login", "sites", "site", "actions", "state", "version", "help":
+		return true
+	default:
+		return false
+	}
+}
+
 func usageText() string {
 	lines := []string{
 		"Usage:",
-		"  httpx [global flags] [--inspect] <profile> <action>",
+		"  httpx run <site> <action>",
+		"  httpx inspect <site> <action>",
+		"  httpx login <site>",
+		"  httpx sites",
+		"  httpx site <site>",
+		"  httpx actions <site>",
+		"  httpx state <site>",
 		"  httpx version",
 		"  httpx --version",
+		"  httpx help",
 		"",
-		"Global flags (can appear before or after the command):",
+		"Global flags (can appear before or after the subcommand):",
 		"  --config <dir>",
-		"  --format json|body",
+		"  --state <path>",
+		"  --format text|json|body",
 		"  --timeout <duration>",
-		"  --state-dir <path>",
 		"  --param key=value",
-		"  --inspect",
 		"  --reveal",
 		"",
+		"Format defaults:",
+		"  run/login = body",
+		"  inspect = json",
+		"  sites/site/actions/state = text",
+		"",
 		"Notes:",
-		"  version = 1 inside TOML config files is the config schema version, not the CLI release version.",
+		"  version = 1 inside TOML site files is the config schema version, not the CLI release version.",
 	}
 	return strings.Join(lines, "\n") + "\n"
 }

@@ -1,4 +1,5 @@
 version = 1
+description = "Example API for local experiments"
 base_url = "https://api.example.com"
 login_action = "login"
 timeout = "10s"
@@ -9,22 +10,26 @@ Accept = "application/json"
 User-Agent = "httpx/1.0"
 
 [actions.login]
+description = "Create a session and save the bearer token"
 method = "POST"
 path = "/session"
 form = { username = { from = "env", key = "DEMO_USER" }, password = { from = "env", key = "DEMO_PASS" } }
 save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 
 [actions.me]
+description = "Fetch the current user profile"
 path = "/me"
 headers = { Authorization = { from = "state", key = "auth.authorization" } }
 extract = ".body"
 
 [actions.search]
+description = "Search public resources"
 path = "/search"
 query = { q = "httpx", api_key = { from = "file", path = "~/.secrets/demo-api-key", trim = true } }
 extract = ".body.items[]?.id"
 
 [actions.repo]
+description = "Fetch repository information using a shell-sourced token"
 path = "/repo"
 headers = { Authorization = { from = "shell", cmd = "pass demo/token", trim = true } }
 extract = ".body"

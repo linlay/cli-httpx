@@ -10,8 +10,9 @@
 
 它要解决的问题：
 
-- 把登录流程、请求参数、状态复用和提取逻辑固化进 profile 配置
-- 让调用方主要执行 `httpx <profile> <action>`
+- 把登录流程、请求参数、状态复用和提取逻辑固化进 site 配置
+- 让调用方主要执行 `httpx run <site> <action>`
+- 让调用方可以先发现 `sites -> site -> actions -> state`，再执行具体请求
 - 让“带状态调用接口”和“从响应里提取字段”变成稳定的 CLI 工作流
 
 它不打算解决的问题：
@@ -24,23 +25,24 @@
 
 运行链路可以理解为：
 
-`profile -> action -> compiled request -> execute -> envelope/state`
+`site -> action -> compiled request -> execute -> envelope/state`
 
 含义如下：
 
-- `profile`：一个 TOML 文件，对应一个站点或系统
-- `action`：profile 中的一个命名请求动作
+- `site`：一个 TOML 文件，对应一个站点或系统
+- `action`：site 中的一个命名请求动作
 - `compiled request`：把默认值、action、动态值、CLI 参数合并后的最终请求
 - `execute`：真正发起 HTTP 请求、处理 cookie、执行 `extract`/`save`
 - `envelope/state`：将结果输出为 body 或 json，并把本地状态落盘
 
 ## 配置语义
 
-每个 profile 对应一个 `<profile>.toml` 文件。
+每个 site 对应一个 `<site>.toml` 文件。
 
 最外层常见字段：
 
 - `version`
+- `description`
 - `base_url`
 - `login_action`
 - `timeout`
@@ -54,6 +56,7 @@
 
 每个 action 可以定义：
 
+- `description`
 - `method`
 - `path`
 - `headers`
@@ -67,23 +70,23 @@
 
 ## 命令语义
 
-### 普通 action
+### `run`
 
 标准调用形式是：
 
 ```bash
-httpx <profile> <action>
+httpx run <site> <action>
 ```
 
-运行时会解析 profile、合并 action 配置、解析动态值、执行请求，并按 `--format` 输出结果。
+运行时会解析 site、合并 action 配置、解析动态值、执行请求，并按 `--format` 输出结果。
 
 ### `login`
 
-`login` 是保留动作名，不直接对应配置中的 action 名。
+`login` 是独立子命令，不是普通 action。
 
 它的语义是：
 
-- 要求 profile 配置了 `login_action`
+- 要求 site 配置了 `login_action`
 - 执行 `login_action` 指向的真实 action
 - 额外刷新本地 cookie 状态
 - 如果配置了 `save`，把提取出的值写入本地 state
@@ -91,9 +94,29 @@ httpx <profile> <action>
 
 ### `inspect`
 
-`--inspect` 只编译请求，不真正发请求。
+```bash
+httpx inspect <site> <action>
+```
+
+它只编译请求，不真正发请求。
 
 默认会对敏感值做脱敏；显式加 `--reveal` 才展示真实值。
+
+### Discovery 命令
+
+用于渐进披露的只读命令：
+
+- `httpx sites`
+- `httpx site <site>`
+- `httpx actions <site>`
+- `httpx state <site>`
+
+语义约定：
+
+- `sites`：列出可用 site、描述、action 数和是否有 local state
+- `site <site>`：列出站点描述、`base_url`、`login_action` 和 state 摘要
+- `actions <site>`：列出 action 名、描述，并标记登录 action
+- `state <site>`：只显示 state 摘要，不显示 state 里的具体值
 
 ### `version`
 
@@ -103,7 +126,7 @@ httpx <profile> <action>
 - commit
 - build time
 
-`version` 是顶层保留命令，不能作为 profile 名使用。
+`version`、`run`、`inspect`、`login`、`sites`、`site`、`actions`、`state`、`help` 都是顶层保留字，不能作为 site 名使用。
 
 ## 动态值解析
 
@@ -138,19 +161,19 @@ httpx <profile> <action>
 默认目录规则：
 
 - 默认目录为 `~/.local/httpx-state`
-- 也可以用 `--state-dir <path>` 覆盖默认目录
+- 也可以用 `--state <path>` 覆盖默认目录
 
 运行约定：
 
-- 不建议把 `--state-dir` 指到 `/tmp/...`，因为这类目录常常跟着沙箱或容器生命周期一起销毁
+- 不建议把 `--state` 指到 `/tmp/...`，因为这类目录常常跟着沙箱或容器生命周期一起销毁
 - 推荐优先使用用户级持久目录：`~/.local/httpx-state`
-- 如果需要显式路径，推荐 `--state-dir "$HOME/.local/httpx-state"`
+- 如果需要显式路径，推荐 `--state "$HOME/.local/httpx-state"`
 - 不建议默认使用 `~/.secret/httpx` 或 `~/.secret/httpx-state`；这里保存的是 mutable runtime state，不是静态 secret 配置
-- 在容器里能否持久化，关键取决于 `HOME` 或 `--state-dir` 是否绑定到宿主机目录或持久卷，而不是路径名本身
+- 在容器里能否持久化，关键取决于 `HOME` 或 `--state` 是否绑定到宿主机目录或持久卷，而不是路径名本身
 
-每个 profile 对应一个 state 文件：
+每个 site 对应一个 state 文件：
 
-- 文件名：`<profile>.json`
+- 文件名：`<site>.json`
 
 state 文件当前结构：
 
@@ -178,14 +201,14 @@ state 文件当前结构：
 
 - `values`：保存 `save = { ... }` 提取出的字符串值，例如 access token、header 值、业务状态
 - `cookies`：保存登录后或请求过程中捕获到的 cookie
-- `last_login`：最近一次执行 `httpx <profile> login` 的时间
+- `last_login`：最近一次执行 `httpx login <site>` 的时间
 
 写入时机：
 
 - 执行请求后，`save` 结果会写入 `state.Values`
 - 当前 cookie jar 会快照到 `state.Cookies`
-- 如果本次请求动作是 `login`，还会更新 `state.LastLogin`
-- 之后统一把 state 写回 `<profile>.json`
+- 如果本次命令是 `login`，还会更新 `state.LastLogin`
+- 之后统一把 state 写回 `<site>.json`
 
 实现位置：
 
@@ -214,6 +237,7 @@ state 文件当前结构：
 
 CLI 有两种主要输出模式：
 
+- `--format text`
 - `--format body`
 - `--format json`
 
@@ -225,9 +249,15 @@ CLI 有两种主要输出模式：
 `json`：
 
 - 输出结构化 envelope
-- 包含 profile、action、status、headers、body、extract、state 更新字段等信息
+- 执行类命令包含 site、action、status、headers、body、extract、state 更新字段等信息
+- discovery 命令输出 `sites`、`site`、`actions`、`state` 这些结构化摘要
 
 `inspect` 默认也使用结构化 JSON 输出编译后的请求描述。
+
+`text`：
+
+- discovery 命令的人读默认输出
+- 适合交互式查看 sites、actions 和 state 摘要
 
 ## 安全约束
 
@@ -243,7 +273,7 @@ CLI 有两种主要输出模式：
 - `values` 中的 token/access token 是明文保存的
 - `cookies` 中的 session cookie 也是明文保存的
 - 这些文件不应该提交到仓库
-- 共享机器或低信任环境下应显式指定安全的 `--state-dir`
+- 共享机器或低信任环境下应显式指定安全的 `--state`
 - 更稳妥的部署约定是由启动脚本或运维预创建 state 目录，并将目录权限设置为 `0700`
 
 这次文档方案只澄清当前行为，不引入 keychain 或加密存储。

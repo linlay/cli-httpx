@@ -5,8 +5,21 @@ import "time"
 type outputFormat string
 
 const (
+	formatText outputFormat = "text"
 	formatJSON outputFormat = "json"
 	formatBody outputFormat = "body"
+)
+
+type commandKind string
+
+const (
+	commandRun     commandKind = "run"
+	commandInspect commandKind = "inspect"
+	commandLogin   commandKind = "login"
+	commandSites   commandKind = "sites"
+	commandSite    commandKind = "site"
+	commandActions commandKind = "actions"
+	commandState   commandKind = "state"
 )
 
 type globalOptions struct {
@@ -20,14 +33,15 @@ type globalOptions struct {
 }
 
 type commandRequest struct {
-	Profile string
+	Command commandKind
+	Site    string
 	Action  string
 	Options globalOptions
 }
 
 type envelope struct {
 	OK           bool                `json:"ok"`
-	Profile      string              `json:"profile,omitempty"`
+	Site         string              `json:"site,omitempty"`
 	Action       string              `json:"action,omitempty"`
 	Status       int                 `json:"status,omitempty"`
 	DurationMS   int64               `json:"duration_ms,omitempty"`

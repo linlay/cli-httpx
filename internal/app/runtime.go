@@ -22,7 +22,7 @@ type Runtime struct {
 }
 
 type compiledRequest struct {
-	Profile      string            `json:"profile"`
+	Site         string            `json:"site"`
 	Action       string            `json:"action"`
 	Method       string            `json:"method"`
 	URL          string            `json:"url"`
@@ -54,7 +54,24 @@ func NewRuntime(stdout, stderr io.Writer) *Runtime {
 }
 
 func (rt *Runtime) Run(req commandRequest) int {
-	configPath, err := resolveConfigPath(req.Options.ConfigDir, req.Profile)
+	switch req.Command {
+	case commandRun, commandInspect, commandLogin:
+		return rt.runActionCommand(req)
+	case commandSites:
+		return rt.runListSites(req)
+	case commandSite:
+		return rt.runShowSite(req)
+	case commandActions:
+		return rt.runListActions(req)
+	case commandState:
+		return rt.runShowState(req)
+	default:
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", fmt.Sprintf("unsupported command %q", req.Command))
+	}
+}
+
+func (rt *Runtime) runActionCommand(req commandRequest) int {
+	configPath, err := resolveConfigPath(req.Options.ConfigDir, req.Site)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
@@ -64,7 +81,7 @@ func (rt *Runtime) Run(req commandRequest) int {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
 
-	state, err := loadState(req.Options.StateDir, req.Profile)
+	state, err := loadState(req.Options.StateDir, req.Site)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
 	}
@@ -75,7 +92,7 @@ func (rt *Runtime) Run(req commandRequest) int {
 		return rt.writeFailure(req, nil, nil, nil, exitCode, code, err.Error())
 	}
 
-	if req.Options.Inspect {
+	if req.Command == commandInspect {
 		if err := writeJSON(rt.stdout, compiled); err != nil {
 			fmt.Fprintf(rt.stderr, "error: %v\n", err)
 			return ExitExecution
@@ -105,14 +122,14 @@ func (rt *Runtime) Run(req commandRequest) int {
 
 func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileState) (*compiledRequest, *persistentJar, *profileState, error) {
 	actionName := req.Action
-	if req.Action == "login" {
+	if req.Command == commandLogin {
 		if strings.TrimSpace(cfg.LoginAction) == "" {
-			return nil, nil, nil, fmt.Errorf("%w: profile %q does not define login_action", ErrConfig, req.Profile)
+			return nil, nil, nil, fmt.Errorf("%w: site %q does not define login_action", ErrConfig, req.Site)
 		}
 		actionName = cfg.LoginAction
 	}
 
-	act, err := selectAction(cfg, req.Profile, actionName)
+	act, err := selectAction(cfg, req.Site, actionName)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -124,7 +141,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 
 	res := resolver{
 		state:  state,
-		reveal: !req.Options.Inspect || req.Options.Reveal,
+		reveal: req.Command != commandInspect || req.Options.Reveal,
 		params: req.Options.Params,
 	}
 	ctx := context.Background()
@@ -139,7 +156,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		if req.Options.Inspect && !req.Options.Reveal && isSensitiveHeader(key) {
+		if req.Command == commandInspect && !req.Options.Reveal && isSensitiveHeader(key) {
 			value = redactedValue
 		}
 		headers[key] = value
@@ -169,7 +186,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 			return nil, nil, nil, err
 		}
 		value = strings.TrimSpace(value)
-		if value != "" && !(req.Options.Inspect && !req.Options.Reveal && value == redactedValue) {
+		if value != "" && !(req.Command == commandInspect && !req.Options.Reveal && value == redactedValue) {
 			if _, err := parseProxyURL(value); err != nil {
 				return nil, nil, nil, fmt.Errorf("%w: proxy: %v", ErrConfig, err)
 			}
@@ -239,11 +256,11 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 
 	jar := newPersistentJar(state.Cookies)
 	compiledProxy := proxyValue
-	if req.Options.Inspect && !req.Options.Reveal {
+	if req.Command == commandInspect && !req.Options.Reveal {
 		compiledProxy = redactProxyURL(proxyValue)
 	}
 	return &compiledRequest{
-		Profile:      req.Profile,
+		Site:         req.Site,
 		Action:       actionName,
 		Method:       merged.Method,
 		URL:          finalURL.String(),
@@ -267,9 +284,9 @@ func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *p
 		exitCode, code := classifyError(err)
 		return requestOutcome{
 			Envelope: envelope{
-				OK:      false,
-				Profile: req.Profile,
-				Action:  compiled.Action,
+				OK:     false,
+				Site:   req.Site,
+				Action: compiled.Action,
 				Error: &errorEnvelope{
 					Code:    code,
 					Message: err.Error(),
@@ -298,9 +315,9 @@ func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *p
 	exitCode, code := classifyError(lastErr)
 	return requestOutcome{
 		Envelope: envelope{
-			OK:      false,
-			Profile: req.Profile,
-			Action:  compiled.Action,
+			OK:     false,
+			Site:   req.Site,
+			Action: compiled.Action,
 			Error: &errorEnvelope{
 				Code:    code,
 				Message: lastErr.Error(),
@@ -433,17 +450,17 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 	sort.Strings(updatedKeys)
 
 	state.Cookies = jar.Snapshot()
-	if req.Action == "login" {
+	if req.Command == commandLogin {
 		state.LastLogin = time.Now().UTC().Format(time.RFC3339)
 	}
-	if err := saveState(req.Options.StateDir, req.Profile, state); err != nil {
+	if err := saveState(req.Options.StateDir, req.Site, state); err != nil {
 		return requestOutcome{}, false, fmt.Errorf("%w: persist state: %v", ErrExecution, err)
 	}
 
 	ok := matchesExpectedStatus(response.StatusCode, compiled.ExpectStatus)
 	envelopeValue := envelope{
 		OK:           ok,
-		Profile:      req.Profile,
+		Site:         req.Site,
 		Action:       compiled.Action,
 		Status:       response.StatusCode,
 		DurationMS:   duration.Milliseconds(),
@@ -483,7 +500,7 @@ func (rt *Runtime) writeFailure(req commandRequest, headers map[string][]string,
 	}
 	env := envelope{
 		OK:      false,
-		Profile: req.Profile,
+		Site:    req.Site,
 		Action:  req.Action,
 		Headers: headers,
 		Body:    body,
