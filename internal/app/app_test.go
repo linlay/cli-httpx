@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -301,6 +300,24 @@ func TestResolveConfigPathRejectsFile(t *testing.T) {
 	_, err := resolveConfigPath(filePath, "demo")
 	if err == nil || !errors.Is(err, ErrConfig) {
 		t.Fatalf("expected config dir error, got %v", err)
+	}
+}
+
+func TestDefaultConfigDirUsesHomeConfigPath(t *testing.T) {
+	t.Setenv("HOME", "/root")
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	if got := defaultConfigDir(); got != "/root/.config/httpx" {
+		t.Fatalf("unexpected default config dir: %q", got)
+	}
+}
+
+func TestDefaultStateDirUsesHomeLocalHTTPXState(t *testing.T) {
+	t.Setenv("HOME", "/root")
+	t.Setenv("XDG_STATE_HOME", "")
+
+	if got := defaultStateDir(); got != "/root/.local/httpx-state" {
+		t.Fatalf("unexpected default state dir: %q", got)
 	}
 }
 
@@ -891,16 +908,13 @@ proxy = "http://alice:secret@proxy.example:8001"
 	}
 }
 
-func TestBuildTransportUsesEnvironmentProxyByDefault(t *testing.T) {
+func TestBuildTransportDoesNotUseEnvironmentProxyByDefault(t *testing.T) {
 	transport, err := buildTransport("")
 	if err != nil {
 		t.Fatalf("buildTransport failed: %v", err)
 	}
-	if transport.Proxy == nil {
-		t.Fatal("expected environment proxy resolver")
-	}
-	if reflect.ValueOf(transport.Proxy).Pointer() != reflect.ValueOf(http.ProxyFromEnvironment).Pointer() {
-		t.Fatal("expected buildTransport to fall back to http.ProxyFromEnvironment")
+	if transport.Proxy != nil {
+		t.Fatal("expected buildTransport to use direct transport by default")
 	}
 }
 

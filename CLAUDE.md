@@ -137,14 +137,13 @@ httpx <profile> <action>
 
 默认目录规则：
 
-- 如果设置了 `XDG_STATE_HOME`，目录为 `$XDG_STATE_HOME/httpx`
-- 否则目录为 `~/.local/state/httpx`
+- 默认目录为 `~/.local/httpx-state`
 - 也可以用 `--state-dir <path>` 覆盖默认目录
 
 运行约定：
 
 - 不建议把 `--state-dir` 指到 `/tmp/...`，因为这类目录常常跟着沙箱或容器生命周期一起销毁
-- 推荐优先使用用户级持久目录：`~/.local/state/httpx`
+- 推荐优先使用用户级持久目录：`~/.local/httpx-state`
 - 如果需要显式路径，推荐 `--state-dir "$HOME/.local/httpx-state"`
 - 不建议默认使用 `~/.secret/httpx` 或 `~/.secret/httpx-state`；这里保存的是 mutable runtime state，不是静态 secret 配置
 - 在容器里能否持久化，关键取决于 `HOME` 或 `--state-dir` 是否绑定到宿主机目录或持久卷，而不是路径名本身

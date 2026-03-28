@@ -76,7 +76,7 @@ extract = ".body"
 proxy = "http://127.0.0.1:8001"
 ```
 
-action 级别的 `proxy` 会覆盖 profile 级别的 `proxy`。未配置时，CLI 继续沿用环境变量代理行为。
+action 级别的 `proxy` 会覆盖 profile 级别的 `proxy`。未配置时，CLI 默认直连，不再自动继承环境变量代理。
 
 ## 常用命令
 
@@ -111,7 +111,7 @@ httpx demo --format json --config ./examples me
 
 推荐约定：
 
-- 首选让默认目录生效：设置 `XDG_STATE_HOME=$HOME/.local/state`，state 会落到 `~/.local/state/httpx`
+- 默认目录就是 `~/.local/httpx-state`
 - 如果要显式指定路径，统一使用 `--state-dir "$HOME/.local/httpx-state"`
 - 不建议默认放到 `~/.secret/httpx` 或 `~/.secret/httpx-state`；`state` 更适合放在用户级 state 目录，而不是和静态 secret 配置混用
 
@@ -124,8 +124,8 @@ httpx demo --format json --config ./examples me
 推荐调用方式：
 
 ```bash
-XDG_STATE_HOME="$HOME/.local/state" ./httpx --format json nexus login
-XDG_STATE_HOME="$HOME/.local/state" ./httpx --format json nexus profile
+./httpx --format json nexus login
+./httpx --format json nexus profile
 ```
 
 或者：
@@ -250,7 +250,7 @@ curl -I https://cligrep.com/cli-releases/httpx/latest/httpx_linux_amd64.tar.gz
 
 默认保存在本地 state 文件里，不保存在配置文件里：
 
-- 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
+- 默认目录：`~/.local/httpx-state`
 - 文件名：`<profile>.json`
 - `values`：保存 `save = { ... }` 提取出来的字符串值，例如 access token
 - `cookies`：保存登录态 cookie

@@ -325,7 +325,7 @@ func newHTTPClient(compiled *compiledRequest, jar *persistentJar) (*http.Client,
 func buildTransport(proxyAddress string) (*http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if strings.TrimSpace(proxyAddress) == "" {
-		transport.Proxy = http.ProxyFromEnvironment
+		transport.Proxy = nil
 		return transport, nil
 	}
 	proxyURL, err := parseProxyURL(proxyAddress)
