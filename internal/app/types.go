@@ -49,7 +49,6 @@ type envelope struct {
 	DurationMS   int64               `json:"duration_ms,omitempty"`
 	Headers      map[string][]string `json:"headers,omitempty"`
 	Body         any                 `json:"body,omitempty"`
-	Extract      any                 `json:"extract,omitempty"`
 	StateUpdated []string            `json:"state_updated,omitempty"`
 	Error        *errorEnvelope      `json:"error,omitempty"`
 }

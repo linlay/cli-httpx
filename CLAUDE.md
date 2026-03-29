@@ -134,7 +134,7 @@ httpx inspect <site> <action>
 - `sites`：列出可用 site、描述、action 数和是否有 local state
 - `site <site>`：列出站点描述、`base_url`、`login_action` 和 state 摘要
 - `action <site> <action>`：列出 action 的方法、路径、extractor、save key，以及声明的 `params` / `extracts`
-- `actions <site>`：列出 action 名、描述，以及声明的 `params` / `extracts` 数量
+- `actions <site>`：列出每个 action 的名称、描述、方法、路径，以及声明的 `params` / `extracts` 详情
 - `state <site>`：只显示 state 摘要，不显示 state 里的具体值
 
 ## 站点测试约定
@@ -148,7 +148,7 @@ httpx inspect <site> <action>
 命令语义：
 
 - `site <site>`：检查站点摘要、`base_url`、`login_action` 和 state 摘要
-- `actions <site>`：检查 action 名、描述，以及声明的 `param` / `extract` 数量
+- `actions <site>`：检查每个 action 的名称、方法、路径，以及声明的 `param` / `extract` 详情
 - `action <site> <action>`：检查 action 的完整输入契约和摘要配置
 - `state <site>`：只检查本地 state 摘要，不暴露敏感值
 - `inspect <site> <action>`：用于无副作用验证 action 编译结果
@@ -294,14 +294,14 @@ CLI 有两种主要输出模式：
 `body`：
 
 - 未配置 `extract_*` 时直接输出响应体原文
-- 配置了 `extract_*` 时输出提取结果
+- 配置了 `extract_*` 时输出处理后的 body
 - 失败时错误信息写到 stderr
 
 `json`：
 
 - 输出结构化 envelope
-- 执行类命令包含 site、action、status、headers、body、extract、state 更新字段等信息
-- 配置了 `extract_*` 的 action 在 `json` 输出下默认省略完整 `body`，只保留 `extract`
+- 执行类命令包含 site、action、status、headers、body、state 更新字段等信息
+- 配置了 `extract_*` 的 action 在 `json` 输出下仍保留完整 envelope，但 `body` 会被处理后的结果替换
 - discovery 命令输出 `sites`、`site`、`actions`、`state` 这些结构化摘要
 
 `inspect` 默认也使用结构化 JSON 输出编译后的请求描述。

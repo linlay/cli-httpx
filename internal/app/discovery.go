@@ -34,16 +34,18 @@ type siteResponse struct {
 	Site siteSummary `json:"site"`
 }
 
-type actionSummary struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Params      int    `json:"params"`
-	Extracts    int    `json:"extracts"`
+type actionListItem struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Method      string            `json:"method"`
+	Path        string            `json:"path"`
+	Params      []actionInputSpec `json:"params"`
+	Extracts    []actionInputSpec `json:"extracts"`
 }
 
 type actionsResponse struct {
-	Site    string          `json:"site"`
-	Actions []actionSummary `json:"actions"`
+	Site    string           `json:"site"`
+	Actions []actionListItem `json:"actions"`
 }
 
 type actionDetail struct {
@@ -159,14 +161,20 @@ func (rt *Runtime) runListActions(req commandRequest) int {
 	}
 	sort.Strings(names)
 
-	items := make([]actionSummary, 0, len(names))
+	items := make([]actionListItem, 0, len(names))
 	for _, name := range names {
 		act := cfg.Actions[name]
-		items = append(items, actionSummary{
+		merged, err := mergeAction(name, cfg, act, 0)
+		if err != nil {
+			return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+		}
+		items = append(items, actionListItem{
 			Name:        name,
-			Description: act.Description,
-			Params:      len(act.Params),
-			Extracts:    len(act.Extracts),
+			Description: merged.Description,
+			Method:      merged.Method,
+			Path:        merged.Path,
+			Params:      cloneActionInputSpecs(merged.Params),
+			Extracts:    cloneActionInputSpecs(merged.Extracts),
 		})
 	}
 
@@ -324,20 +332,33 @@ func writeSiteText(w io.Writer, summary siteSummary) error {
 	return err
 }
 
-func writeActionsText(w io.Writer, site string, actions []actionSummary) error {
+func writeActionsText(w io.Writer, site string, actions []actionListItem) error {
 	if _, err := fmt.Fprintf(w, "site: %s\n", site); err != nil {
 		return err
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ACTION\tDESCRIPTION\tPARAMS\tEXTRACTS"); err != nil {
-		return err
-	}
-	for _, action := range actions {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%d\t%d\n", action.Name, action.Description, action.Params, action.Extracts); err != nil {
+	for i, action := range actions {
+		if i > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w,
+			"\naction: %s\ndescription: %s\nmethod: %s\npath: %s\n",
+			action.Name,
+			action.Description,
+			action.Method,
+			action.Path,
+		); err != nil {
+			return err
+		}
+		if err := writeInputSpecsText(w, "params", action.Params); err != nil {
+			return err
+		}
+		if err := writeInputSpecsText(w, "extracts", action.Extracts); err != nil {
 			return err
 		}
 	}
-	return tw.Flush()
+	return nil
 }
 
 func writeActionText(w io.Writer, detail actionDetail) error {
@@ -361,23 +382,26 @@ func writeActionText(w io.Writer, detail actionDetail) error {
 }
 
 func writeInputSpecsText(w io.Writer, label string, specs []actionInputSpec) error {
+	if len(specs) == 0 {
+		_, err := fmt.Fprintf(w, "%s: []\n", label)
+		return err
+	}
 	if _, err := fmt.Fprintf(w, "%s:\n", label); err != nil {
 		return err
 	}
-	if len(specs) == 0 {
-		_, err := fmt.Fprintln(w, "  -")
-		return err
-	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "NAME\tTYPE\tREQUIRED\tDESCRIPTION\tEXAMPLE"); err != nil {
-		return err
-	}
 	for _, spec := range specs {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%t\t%s\t%s\n", spec.Name, emptyText(spec.Type), spec.Required, emptyText(spec.Description), describeExample(spec.Example)); err != nil {
+		if _, err := fmt.Fprintf(w,
+			"  - name: %s\n    type: %s\n    required: %t\n    description: %s\n    example: %s\n",
+			emptyText(spec.Name),
+			emptyText(spec.Type),
+			spec.Required,
+			emptyText(spec.Description),
+			describeExample(spec.Example),
+		); err != nil {
 			return err
 		}
 	}
-	return tw.Flush()
+	return nil
 }
 
 func describeExtractor(spec *extractorSpec) string {

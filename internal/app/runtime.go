@@ -112,7 +112,7 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 		if outcome.ExitCode == ExitSuccess {
 			content := outcome.RawBody
 			if compiled.compiledExtractor != nil {
-				content, err = renderExtractOutput(outcome.Envelope.Extract)
+				content, err = renderExtractOutput(outcome.Envelope.Body)
 				if err != nil {
 					fmt.Fprintf(rt.stderr, "error: %v\n", err)
 					return ExitExecution
@@ -483,6 +483,10 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 	}
 
 	ok := matchesExpectedStatus(response.StatusCode, compiled.ExpectStatus)
+	bodyValue := decodedBody
+	if compiled.compiledExtractor != nil {
+		bodyValue = extracted
+	}
 	envelopeValue := envelope{
 		OK:           ok,
 		Site:         req.Site,
@@ -490,11 +494,8 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 		Status:       response.StatusCode,
 		DurationMS:   duration.Milliseconds(),
 		Headers:      headers,
-		Extract:      extracted,
+		Body:         bodyValue,
 		StateUpdated: updatedKeys,
-	}
-	if compiled.compiledExtractor == nil {
-		envelopeValue.Body = decodedBody
 	}
 
 	if !ok {

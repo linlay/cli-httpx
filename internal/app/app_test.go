@@ -1097,6 +1097,11 @@ extract_expr = ".body.value"
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, runStderr, runStdout)
 	}
 
+	var runOutput map[string]any
+	if err := json.Unmarshal([]byte(runStdout), &runOutput); err != nil {
+		t.Fatalf("unmarshal run output map: %v", err)
+	}
+
 	var env envelope
 	if err := json.Unmarshal([]byte(runStdout), &env); err != nil {
 		t.Fatalf("unmarshal run output: %v", err)
@@ -1110,11 +1115,11 @@ extract_expr = ".body.value"
 	if env.Site != "demo" {
 		t.Fatalf("unexpected site: %#v", env.Site)
 	}
-	if value, ok := env.Extract.(float64); !ok || value != 42 {
-		t.Fatalf("unexpected extract: %#v", env.Extract)
+	if value, ok := env.Body.(float64); !ok || value != 42 {
+		t.Fatalf("unexpected body: %#v", env.Body)
 	}
-	if env.Body != nil {
-		t.Fatalf("expected body to be omitted when extractor is configured, got %#v", env.Body)
+	if _, exists := runOutput["extract"]; exists {
+		t.Fatalf("expected no extract field in runtime output, got %#v", runOutput)
 	}
 }
 
@@ -1169,15 +1174,20 @@ extract_expr = ".body.ok"
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
 
+	var runOutput map[string]any
+	if err := json.Unmarshal([]byte(stdout), &runOutput); err != nil {
+		t.Fatalf("unmarshal run output map: %v", err)
+	}
+
 	var env envelope
 	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
 		t.Fatalf("unmarshal run output: %v", err)
 	}
-	if ok, _ := env.Extract.(bool); !ok {
-		t.Fatalf("unexpected extract: %#v", env.Extract)
+	if ok, _ := env.Body.(bool); !ok {
+		t.Fatalf("unexpected body: %#v", env.Body)
 	}
-	if env.Body != nil {
-		t.Fatalf("expected body to be omitted when extractor is configured, got %#v", env.Body)
+	if _, exists := runOutput["extract"]; exists {
+		t.Fatalf("expected no extract field in runtime output, got %#v", runOutput)
 	}
 }
 
@@ -1388,6 +1398,43 @@ path = "/ping"
 	}
 }
 
+func TestJSONFormatOutputsRawBodyWithoutExtractor(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":"pong"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.ping]
+description = "Ping site"
+path = "/ping"
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "json", "run", "demo", "ping"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	var runOutput map[string]any
+	if err := json.Unmarshal([]byte(stdout), &runOutput); err != nil {
+		t.Fatalf("unmarshal run output map: %v", err)
+	}
+	body, ok := runOutput["body"].(map[string]any)
+	if !ok || body["message"] != "pong" {
+		t.Fatalf("unexpected body output: %#v", runOutput)
+	}
+	if _, exists := runOutput["extract"]; exists {
+		t.Fatalf("expected no extract field in runtime output, got %#v", runOutput)
+	}
+}
+
 func TestBodyFormatOutputsJQExtractorResult(t *testing.T) {
 	t.Parallel()
 
@@ -1451,6 +1498,144 @@ extract_expr = ".extract as $extract | .body.items | map(select(.age_days <= ($e
 	}
 	if stdout != `[1,3]` {
 		t.Fatalf("unexpected extractor output: %q", stdout)
+	}
+}
+
+func TestBodyFormatJQExtractorTreatsNullDataAsEmptyWhenCodeIsZero(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":null,"msg":"成功"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.summary]
+description = "Load summary"
+path = "/summary"
+extract_type = "jq"
+extract_expr = '''
+def fail_payload($payload; $reason):
+  (
+    $reason
+    + "; code="
+    + (($payload.code // "null") | tostring)
+    + "; msg="
+    + (($payload.msg // "<none>") | tostring)
+    + "; data_type="
+    + (
+        if ($payload | type) == "object" and ($payload | has("data")) then
+          ($payload.data | type)
+        else
+          "<missing>"
+        end
+      )
+  ) | halt_error(1);
+.body as $payload
+| (
+    if ($payload | type) != "object" then
+      fail_payload($payload; "todo summary payload body is not an object")
+    elif (($payload.code // 0) != 0) then
+      fail_payload($payload; "todo summary upstream returned non-zero code")
+    elif ($payload.data == null) then
+      []
+    elif (($payload.data | type) == "array") then
+      $payload.data
+    else
+      fail_payload($payload; "todo summary payload data is not an array")
+    end
+  ) as $source_items
+| .extract as $extract
+| $source_items
+| map(select(($extract.days // null) == null or .age_days <= ($extract.days | tonumber)))
+| map(.id)
+'''
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", t.TempDir(),
+		"--format", "body",
+		"run", "demo", "summary",
+		"--extract", `{"days":30}`,
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if stdout != `[]` {
+		t.Fatalf("unexpected extractor output: %q", stdout)
+	}
+}
+
+func TestBodyFormatJQExtractorFailsClearlyWhenCodeIsNonZero(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":123,"data":null,"msg":"上游失败"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.summary]
+description = "Load summary"
+path = "/summary"
+extract_type = "jq"
+extract_expr = '''
+def fail_payload($payload; $reason):
+  (
+    $reason
+    + "; code="
+    + (($payload.code // "null") | tostring)
+    + "; msg="
+    + (($payload.msg // "<none>") | tostring)
+    + "; data_type="
+    + (
+        if ($payload | type) == "object" and ($payload | has("data")) then
+          ($payload.data | type)
+        else
+          "<missing>"
+        end
+      )
+  ) | halt_error(1);
+.body as $payload
+| (
+    if ($payload | type) != "object" then
+      fail_payload($payload; "todo summary payload body is not an object")
+    elif (($payload.code // 0) != 0) then
+      fail_payload($payload; "todo summary upstream returned non-zero code")
+    elif ($payload.data == null) then
+      []
+    elif (($payload.data | type) == "array") then
+      $payload.data
+    else
+      fail_payload($payload; "todo summary payload data is not an array")
+    end
+  ) as $source_items
+| $source_items
+'''
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", t.TempDir(),
+		"--format", "body",
+		"run", "demo", "summary",
+	})
+	if exitCode != ExitAssertion {
+		t.Fatalf("expected assertion failure, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if !strings.Contains(stderr, `todo summary upstream returned non-zero code; code=123; msg=上游失败; data_type=null`) {
+		t.Fatalf("unexpected stderr: %q", stderr)
 	}
 }
 
@@ -1518,6 +1703,50 @@ extract_group = 1
 	}
 	if stdout != `OFFICE` {
 		t.Fatalf("unexpected regex extractor output: %q", stdout)
+	}
+}
+
+func TestJSONFormatReplacesBodyWithRegexExtractorResult(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("group=WRM group=OFFICE"))
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[actions.ids]
+description = "Load ids"
+path = "/ids"
+extract_type = "regex"
+extract_pattern = "group=({{extract.group}})"
+extract_group = 1
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", t.TempDir(),
+		"--format", "json",
+		"run", "demo", "ids",
+		"--extract", `{"group":"OFFICE"}`,
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	var runOutput map[string]any
+	if err := json.Unmarshal([]byte(stdout), &runOutput); err != nil {
+		t.Fatalf("unmarshal run output map: %v", err)
+	}
+	if runOutput["body"] != "OFFICE" {
+		t.Fatalf("unexpected body output: %#v", runOutput)
+	}
+	if _, exists := runOutput["extract"]; exists {
+		t.Fatalf("expected no extract field in runtime output, got %#v", runOutput)
 	}
 }
 
@@ -1633,7 +1862,7 @@ extract_group = 1
 	}
 }
 
-func TestDiscoveryCommandsExposeSummariesOnly(t *testing.T) {
+func TestDiscoveryCommandsExposeUsableActionMetadata(t *testing.T) {
 	configDir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -1706,11 +1935,17 @@ path = "/search"
 	if exitCode != ExitSuccess {
 		t.Fatalf("actions failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
-	if !strings.Contains(stdout, "signin") || !strings.Contains(stdout, "profile") {
+	if !strings.Contains(stdout, "action: signin") || !strings.Contains(stdout, "action: profile") {
 		t.Fatalf("unexpected actions output: %q", stdout)
 	}
-	if !strings.Contains(stdout, "PARAMS") || !strings.Contains(stdout, "EXTRACTS") {
-		t.Fatalf("expected params/extracts columns in actions output: %q", stdout)
+	if !strings.Contains(stdout, "method: POST") || !strings.Contains(stdout, "path: /login") {
+		t.Fatalf("expected method/path details in actions output: %q", stdout)
+	}
+	if !strings.Contains(stdout, "params: []") || !strings.Contains(stdout, "extracts:\n  - name: group") {
+		t.Fatalf("expected yaml-style params/extracts sections in actions output: %q", stdout)
+	}
+	if !strings.Contains(stdout, "type: string") || !strings.Contains(stdout, "required: false") || !strings.Contains(stdout, `example: "WRM"`) {
+		t.Fatalf("expected extract spec details in actions output: %q", stdout)
 	}
 	if strings.Contains(stdout, "LOGIN") || strings.Contains(stdout, "yes") || strings.Contains(stdout, "no") {
 		t.Fatalf("unexpected login marker in actions output: %q", stdout)
@@ -1720,30 +1955,39 @@ path = "/search"
 	if exitCode != ExitSuccess {
 		t.Fatalf("actions json failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
-	var actionsResp map[string]any
+	var actionsResp actionsResponse
 	if err := json.Unmarshal([]byte(stdout), &actionsResp); err != nil {
 		t.Fatalf("unmarshal actions output: %v", err)
 	}
-	actions, ok := actionsResp["actions"].([]any)
-	if !ok || len(actions) != 2 {
+	if len(actionsResp.Actions) != 2 {
 		t.Fatalf("unexpected actions response: %#v", actionsResp)
 	}
-	for _, item := range actions {
-		action, ok := item.(map[string]any)
-		if !ok {
-			t.Fatalf("unexpected action item: %#v", item)
-		}
-		if _, exists := action["is_login_action"]; exists {
-			t.Fatalf("unexpected is_login_action field: %#v", action)
-		}
-	}
 	foundProfile := false
-	for _, item := range actions {
-		action := item.(map[string]any)
-		if action["name"] == "profile" {
+	for _, action := range actionsResp.Actions {
+		if action.Name == "profile" {
 			foundProfile = true
-			if action["extracts"] != float64(1) {
+			if action.Method != "GET" || action.Path != "/me" {
+				t.Fatalf("expected method/path details for profile action: %#v", action)
+			}
+			if len(action.Params) != 0 {
+				t.Fatalf("expected empty params for profile action: %#v", action)
+			}
+			if len(action.Extracts) != 1 {
 				t.Fatalf("expected extract count for profile action: %#v", action)
+			}
+			if action.Extracts[0].Name != "group" || action.Extracts[0].Type != "string" || action.Extracts[0].Description != "Filter group" {
+				t.Fatalf("unexpected extract spec for profile action: %#v", action)
+			}
+			if example, ok := action.Extracts[0].Example.(string); !ok || example != "WRM" {
+				t.Fatalf("unexpected extract example for profile action: %#v", action)
+			}
+		}
+		if action.Name == "signin" {
+			if action.Method != "POST" || action.Path != "/login" {
+				t.Fatalf("expected method/path details for signin action: %#v", action)
+			}
+			if len(action.Params) != 0 || len(action.Extracts) != 0 {
+				t.Fatalf("expected empty params/extracts for signin action: %#v", action)
 			}
 		}
 	}
@@ -1761,6 +2005,17 @@ path = "/search"
 	}
 	if actionResp.Action.Name != "profile" || len(actionResp.Action.Extracts) != 1 || actionResp.Action.Extracts[0].Name != "group" {
 		t.Fatalf("unexpected action response: %#v", actionResp)
+	}
+
+	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "action", "alpha", "profile"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("action text failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if !strings.Contains(stdout, "extractor: -") || !strings.Contains(stdout, "params: []") {
+		t.Fatalf("expected action text metadata and empty yaml params: %q", stdout)
+	}
+	if !strings.Contains(stdout, "extracts:\n  - name: group") || !strings.Contains(stdout, "description: Filter group") || !strings.Contains(stdout, `example: "WRM"`) {
+		t.Fatalf("expected action text yaml extracts: %q", stdout)
 	}
 
 	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "state", "alpha"})

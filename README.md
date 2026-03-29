@@ -138,8 +138,8 @@ extract_group = 1
 - JSON 响应用 `extract_type = "jq"` 和 `extract_expr`
 - 文本响应用 `extract_type = "regex"`，搭配 `extract_pattern`，可选 `extract_group` 和 `extract_all`
 - 旧的 `extract = "..."` 和 `[actions.<name>.extractor]` 都不再支持
-- 配置了 `extract_*` 后，`run/login --format body` 默认输出提取结果
-- 配置了 `extract_*` 后，`run/login --format json` 只保留 `extract`，不再输出完整 `body`
+- 配置了 `extract_*` 后，`run/login --format body` 输出处理后的 body
+- 配置了 `extract_*` 后，`run/login --format json` 仍保留完整 envelope，只是其中的 `body` 会变成处理后的 body
 - `jq` 可以一次组装多个 key，例如 `.body | {id, title, owner}` 或 `.body.items | map({id, name})`
 - `--extract` 只给 extractor 用，不参与请求编译；在 jq extractor 里通过 `.extract` 访问
 - regex extractor 可在 `extract_pattern` 里使用 `{{extract.key}}`
@@ -183,7 +183,7 @@ httpx state <site>
 推荐按这个顺序测试任意一个 `<site>`：
 
 1. 先跑 discovery 命令，确认站点、action 和本地 state 摘要
-2. 再跑 `action <site> <action>`，确认运行时输入契约
+2. 先跑 `actions <site>`，直接查看每个 action 的方法、路径和 `params` / `extracts` 详情；需要 extractor 或 save key 时再跑 `action <site> <action>`
 3. 再跑 `inspect <site> <action>`，验证配置能否成功编译
 4. 最后跑 `run <site> <action>`，验证真实请求
 
