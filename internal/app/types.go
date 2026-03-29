@@ -7,7 +7,6 @@ type outputFormat string
 const (
 	formatText outputFormat = "text"
 	formatJSON outputFormat = "json"
-	formatBody outputFormat = "body"
 )
 
 type commandKind string

@@ -116,7 +116,7 @@ CLI 现在使用 Cobra 风格的根命令和子命令组织；帮助信息统一
 
 - `--config <dir>`：配置目录，读取 `<dir>/<site>.toml`
 - `--state <path>`：覆盖默认状态目录
-- `--format text|json|body`：输出格式
+- `--format text|json`：输出格式
 - `--param key=value`：传入运行时参数，可重复
 - `--extract <json-object>`：传入 extractor 运行时输入
 - `--timeout <duration>`：覆盖配置超时
@@ -140,7 +140,7 @@ extract_group = 1
 - JSON 响应用 `extract_type = "jq"` 和 `extract_expr`
 - 文本响应用 `extract_type = "regex"`，搭配 `extract_pattern`，可选 `extract_group` 和 `extract_all`
 - 旧的 `extract = "..."` 和 `[actions.<name>.extractor]` 都不再支持
-- 配置了 `extract_*` 后，`run/login --format body` 输出处理后的 body
+- 配置了 `extract_*` 后，`run/login --format text` 输出处理后的 body
 - 配置了 `extract_*` 后，`run/login --format json` 仍保留完整 envelope，只是其中的 `body` 会变成处理后的 body
 - `jq` 可以一次组装多个 key，例如 `.body | {id, title, owner}` 或 `.body.items | map({id, name})`
 - `--extract` 只给 extractor 用，不参与请求编译；在 jq extractor 里通过 `.extract` 访问
@@ -155,7 +155,7 @@ httpx run demo summary --extract '{"days":7,"group":["WRM","OFFICE"]}'
 
 格式默认值：
 
-- `run` / `login`：`body`
+- `run` / `login`：`text`
 - `inspect`：`json`
 - `sites` / `site` / `action` / `actions` / `state`：`text`
 
@@ -175,7 +175,7 @@ httpx state <site>
 
 - 有哪些 site
 - 某个 site 有哪些 actions
-- 某个 action 支持哪些 `--param` 和 `--extract`
+- 某个 action 支持哪些 `--param`、`--extract` 和调用方式
 - 某个 site 是否存在 local state
 
 `httpx state <site>` 只展示摘要，不展示 state 里的具体值。默认摘要字段包括 state 文件路径、是否存在、`last_login`、已保存键数量和 cookie 数量。
@@ -185,7 +185,7 @@ httpx state <site>
 推荐按这个顺序测试任意一个 `<site>`：
 
 1. 先跑 discovery 命令，确认站点、action 和本地 state 摘要
-2. 先跑 `actions <site>`，直接查看每个 action 的方法、路径和 `params` / `extracts` 详情；需要 extractor 或 save key 时再跑 `action <site> <action>`
+2. 先跑 `actions <site>`，快速查看 action 名称和描述；需要输入契约和调用示例时再跑 `action <site> <action>`
 3. 再跑 `inspect <site> <action>`，验证配置能否成功编译
 4. 最后跑 `run <site> <action>`，验证真实请求
 
@@ -205,7 +205,7 @@ httpx login <site>
 
 - `login <site>` 只适用于配置了 `login_action` 的 site
 - 如果 site 没有 `login_action`，`login <site>` 预期失败，这是正常行为
-- `inspect <site> <action>` 不真正发请求，适合作为无副作用配置检查
+- `inspect <site> <action>` 不真正发请求，适合作为无副作用查看 action 编译结果
 - `run <site> <action>` 是否成功，通常依赖目标站点是否允许匿名访问，以及本地是否已有有效 state/cookie
 
 通用批量测试流程：

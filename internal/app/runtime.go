@@ -108,7 +108,7 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 	}
 
 	outcome := rt.execute(req, compiled, jar, state)
-	if req.Options.Format == formatBody {
+	if req.Options.Format == formatText {
 		if outcome.ExitCode == ExitSuccess {
 			content := outcome.RawBody
 			if compiled.compiledExtractor != nil {
@@ -522,7 +522,7 @@ func classifyError(err error) (int, string) {
 }
 
 func (rt *Runtime) writeFailure(req commandRequest, headers map[string][]string, body any, rawBody []byte, exitCode int, code, message string) int {
-	if req.Options.Format == formatBody {
+	if req.Options.Format == formatText {
 		fmt.Fprintf(rt.stderr, "error: %s\n", message)
 		return exitCode
 	}

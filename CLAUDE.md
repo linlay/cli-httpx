@@ -121,7 +121,7 @@ httpx run <site> <action>
 httpx inspect <site> <action>
 ```
 
-它只编译请求，不真正发请求。
+它只编译请求，不真正发请求；主要用于查看某个 action 最终会生成什么请求。
 
 默认会对敏感值做脱敏；显式加 `--reveal` 才展示真实值。
 
@@ -139,8 +139,8 @@ httpx inspect <site> <action>
 
 - `sites`：列出可用 site、描述、action 数和是否有 local state
 - `site <site>`：列出站点描述、`base_url`、`login_action` 和 state 摘要
-- `action <site> <action>`：列出 action 的方法、路径、extractor、save key，以及声明的 `params` / `extracts`
-- `actions <site>`：列出每个 action 的名称、描述、方法、路径，以及声明的 `params` / `extracts` 详情
+- `action <site> <action>`：输出以 `httpx run <site> <action>` 为中心的接口说明页，展示 flags、`params` / `extracts` 字段表和示例
+- `actions <site>`：列出每个 action 的名称和描述，作为短列表入口
 - `state <site>`：只显示 state 摘要，不显示 state 里的具体值
 
 ## 站点测试约定
@@ -154,8 +154,8 @@ httpx inspect <site> <action>
 命令语义：
 
 - `site <site>`：检查站点摘要、`base_url`、`login_action` 和 state 摘要
-- `actions <site>`：检查每个 action 的名称、方法、路径，以及声明的 `param` / `extract` 详情
-- `action <site> <action>`：检查 action 的完整输入契约和摘要配置
+- `actions <site>`：检查每个 action 的名称和描述，快速筛选目标 action
+- `action <site> <action>`：检查 action 的完整输入契约、可用 flags 和调用示例
 - `state <site>`：只检查本地 state 摘要，不暴露敏感值
 - `inspect <site> <action>`：用于无副作用验证 action 编译结果
 - `run <site> <action>`：用于真实请求验证，可能依赖登录态或站点自身匿名访问策略
@@ -294,10 +294,9 @@ state 文件当前结构：
 CLI 有两种主要输出模式：
 
 - `--format text`
-- `--format body`
 - `--format json`
 
-`body`：
+`text`：
 
 - 未配置 `extract_*` 时直接输出响应体原文
 - 配置了 `extract_*` 时输出处理后的 body

@@ -336,97 +336,230 @@ func writeActionsText(w io.Writer, site string, actions []actionListItem) error 
 	if _, err := fmt.Fprintf(w, "site: %s\n", site); err != nil {
 		return err
 	}
-	for i, action := range actions {
-		if i > 0 {
-			if _, err := fmt.Fprintln(w); err != nil {
-				return err
-			}
-		}
-		if _, err := fmt.Fprintf(w,
-			"\naction: %s\ndescription: %s\nmethod: %s\npath: %s\n",
-			action.Name,
-			action.Description,
-			action.Method,
-			action.Path,
-		); err != nil {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "ACTION\tDESCRIPTION"); err != nil {
+		return err
+	}
+	for _, action := range actions {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\n", action.Name, action.Description); err != nil {
 			return err
 		}
-		if err := writeInputSpecsText(w, "params", action.Params); err != nil {
-			return err
-		}
-		if err := writeInputSpecsText(w, "extracts", action.Extracts); err != nil {
+	}
+	return tw.Flush()
+}
+
+func writeActionText(w io.Writer, detail actionDetail) error {
+	if _, err := fmt.Fprintf(w, "Usage:\n  httpx run %s %s [flags]\n", detail.Site, detail.Name); err != nil {
+		return err
+	}
+	if err := writeParagraphSection(w, "Description", detail.Description); err != nil {
+		return err
+	}
+	if err := writeActionFlagsSection(w, len(detail.Params) > 0, len(detail.Extracts) > 0); err != nil {
+		return err
+	}
+	if err := writeInputSpecsTable(w, "Params fields", detail.Params); err != nil {
+		return err
+	}
+	if err := writeInputSpecsTable(w, "Extracts fields", detail.Extracts); err != nil {
+		return err
+	}
+	return writeExamplesSection(w, buildActionExamples(detail))
+}
+
+func writeParagraphSection(w io.Writer, title, body string) error {
+	if _, err := fmt.Fprintf(w, "\n%s:\n", title); err != nil {
+		return err
+	}
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		if _, err := fmt.Fprintf(w, "  %s\n", line); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func writeActionText(w io.Writer, detail actionDetail) error {
-	if _, err := fmt.Fprintf(w,
-		"site: %s\naction: %s\ndescription: %s\nmethod: %s\npath: %s\nextractor: %s\nexpect_status: %s\nsave_keys: %s\n",
-		detail.Site,
-		detail.Name,
-		detail.Description,
-		detail.Method,
-		detail.Path,
-		describeExtractor(detail.Extractor),
-		describeStatuses(detail.ExpectStatus),
-		describeSaveKeys(detail.SaveKeys),
-	); err != nil {
+func writeActionFlagsSection(w io.Writer, hasParams, hasExtracts bool) error {
+	if _, err := fmt.Fprint(w, "\nFlags:\n"); err != nil {
 		return err
 	}
-	if err := writeInputSpecsText(w, "params", detail.Params); err != nil {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if hasParams {
+		if _, err := fmt.Fprintln(tw, "--param key=value\tRequest parameter in key=value form; repeatable"); err != nil {
+			return err
+		}
+	}
+	if hasExtracts {
+		if _, err := fmt.Fprintln(tw, "--extract <json-object>\tExtractor input as a JSON object"); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(tw, "-h, --help\thelp for this action"); err != nil {
 		return err
 	}
-	return writeInputSpecsText(w, "extracts", detail.Extracts)
+	return tw.Flush()
 }
 
-func writeInputSpecsText(w io.Writer, label string, specs []actionInputSpec) error {
+func writeInputSpecsTable(w io.Writer, title string, specs []actionInputSpec) error {
 	if len(specs) == 0 {
-		_, err := fmt.Fprintf(w, "%s: []\n", label)
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "\n%s:\n", title); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "%s:\n", label); err != nil {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "name\ttype\trequired\tdefault\tdescription\texample"); err != nil {
 		return err
 	}
 	for _, spec := range specs {
-		if _, err := fmt.Fprintf(w,
-			"  - name: %s\n    type: %s\n    required: %t\n    description: %s\n    example: %s\n",
+		required := "no"
+		if spec.Required {
+			required = "yes"
+		}
+		if _, err := fmt.Fprintf(
+			tw,
+			"%s\t%s\t%s\t-\t%s\t%s\n",
 			emptyText(spec.Name),
 			emptyText(spec.Type),
-			spec.Required,
+			required,
 			emptyText(spec.Description),
 			describeExample(spec.Example),
 		); err != nil {
 			return err
 		}
 	}
+	return tw.Flush()
+}
+
+func writeExamplesSection(w io.Writer, examples []string) error {
+	if len(examples) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprint(w, "\nExamples:\n"); err != nil {
+		return err
+	}
+	for _, example := range examples {
+		if _, err := fmt.Fprintf(w, "  %s\n", example); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func describeExtractor(spec *extractorSpec) string {
-	if spec == nil {
-		return "-"
+func buildActionExamples(detail actionDetail) []string {
+	base := fmt.Sprintf("httpx run %s %s", detail.Site, detail.Name)
+	paramArgs := buildParamExampleArgs(detail.Params)
+	extractArg := buildExtractExampleArg(detail.Extracts)
+
+	candidates := []string{base}
+	if len(paramArgs) > 0 {
+		candidates = append(candidates, base+" "+strings.Join(paramArgs, " "))
 	}
-	return spec.Type
+	if extractArg != "" {
+		candidates = append(candidates, base+" "+extractArg)
+	}
+	if len(paramArgs) > 0 && extractArg != "" {
+		candidates = append(candidates, base+" "+strings.Join(paramArgs, " ")+" "+extractArg)
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	examples := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		examples = append(examples, candidate)
+	}
+	return examples
 }
 
-func describeStatuses(statuses []int) string {
-	if len(statuses) == 0 {
-		return "-"
+func buildParamExampleArgs(specs []actionInputSpec) []string {
+	if len(specs) == 0 {
+		return nil
 	}
-	parts := make([]string, 0, len(statuses))
-	for _, status := range statuses {
-		parts = append(parts, fmt.Sprintf("%d", status))
+	args := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		if !spec.Required && spec.Example == nil {
+			continue
+		}
+		value := renderParamExampleValue(spec)
+		arg := spec.Name + "=" + value
+		if needsShellQuoting(arg) {
+			arg = shellSingleQuote(arg)
+		}
+		args = append(args, "--param "+arg)
 	}
-	return strings.Join(parts, ",")
+	if len(args) == 0 {
+		fallback := specs[0].Name + "=<" + specs[0].Name + ">"
+		if needsShellQuoting(fallback) {
+			fallback = shellSingleQuote(fallback)
+		}
+		args = append(args, "--param "+fallback)
+	}
+	return args
 }
 
-func describeSaveKeys(keys []string) string {
-	if len(keys) == 0 {
-		return "-"
+func buildExtractExampleArg(specs []actionInputSpec) string {
+	if len(specs) == 0 {
+		return ""
 	}
-	return strings.Join(keys, ",")
+	payload := make(map[string]any)
+	for _, spec := range specs {
+		if spec.Example != nil {
+			payload[spec.Name] = spec.Example
+			continue
+		}
+		if spec.Required {
+			payload[spec.Name] = "<" + spec.Name + ">"
+		}
+	}
+	if len(payload) == 0 {
+		payload[specs[0].Name] = "<" + specs[0].Name + ">"
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "--extract '{...}'"
+	}
+	return "--extract " + shellSingleQuote(string(data))
+}
+
+func renderParamExampleValue(spec actionInputSpec) string {
+	if spec.Example == nil {
+		return "<" + spec.Name + ">"
+	}
+	switch value := spec.Example.(type) {
+	case string:
+		if value == "" {
+			return "<" + spec.Name + ">"
+		}
+		return value
+	case bool:
+		if value {
+			return "true"
+		}
+		return "false"
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%v", value)
+	default:
+		return "<" + spec.Name + ">"
+	}
+}
+
+func needsShellQuoting(value string) bool {
+	return strings.ContainsAny(value, " \t\n'\"\\$`!&;|<>()[]{}")
+}
+
+func shellSingleQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func describeExample(value any) string {

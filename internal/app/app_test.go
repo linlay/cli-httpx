@@ -440,8 +440,8 @@ func TestParseArgsDefaultsByCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseArgs run failed: %v", err)
 	}
-	if runReq.Options.Format != formatBody {
-		t.Fatalf("expected run default format body, got %q", runReq.Options.Format)
+	if runReq.Options.Format != formatText {
+		t.Fatalf("expected run default format text, got %q", runReq.Options.Format)
 	}
 
 	inspectReq, err := parseArgs([]string{"inspect", "demo", "list"})
@@ -537,7 +537,8 @@ func TestParseArgsRejectsInvalidCombinations(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"inspect", "--format", "body", "demo", "list"},
-		{"run", "--format", "text", "demo", "list"},
+		{"run", "--format", "body", "demo", "list"},
+		{"login", "--format", "body", "demo"},
 		{"run", "demo", "list", "--extract", `[]`},
 		{"run", "demo", "list", "--extract", `{"days":`},
 		{"run", "demo", "list", "--extract", `{"days":7}`, "--extract", `{"group":"WRM"}`},
@@ -553,6 +554,18 @@ func TestParseArgsRejectsInvalidCombinations(t *testing.T) {
 		if _, err := parseArgs(args); err == nil {
 			t.Fatalf("expected parse error for args %#v", args)
 		}
+	}
+}
+
+func TestParseArgsRejectsBodyFormatWithTextHint(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseArgs([]string{"run", "--format", "body", "demo", "list"})
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if !strings.Contains(err.Error(), `use "text" instead`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1319,7 +1332,7 @@ description = "Ping site"
 path = "/ping"
 `, origin.URL, proxy.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "ping"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "text", "run", "demo", "ping"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1389,7 +1402,7 @@ description = "Ping site"
 path = "/ping"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "ping"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "text", "run", "demo", "ping"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1456,7 +1469,7 @@ extract_type = "jq"
 extract_expr = ".body | {id, title, owner}"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "repo"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "text", "run", "demo", "repo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1489,7 +1502,7 @@ extract_expr = ".extract as $extract | .body.items | map(select(.age_days <= ($e
 	stdout, stderr, exitCode := runMain(t, []string{
 		"--config", configDir,
 		"--state", t.TempDir(),
-		"--format", "body",
+		"--format", "text",
 		"run", "demo", "summary",
 		"--extract", `{"days":7}`,
 	})
@@ -1560,7 +1573,7 @@ def fail_payload($payload; $reason):
 	stdout, stderr, exitCode := runMain(t, []string{
 		"--config", configDir,
 		"--state", t.TempDir(),
-		"--format", "body",
+		"--format", "text",
 		"run", "demo", "summary",
 		"--extract", `{"days":30}`,
 	})
@@ -1628,7 +1641,7 @@ def fail_payload($payload; $reason):
 	stdout, stderr, exitCode := runMain(t, []string{
 		"--config", configDir,
 		"--state", t.TempDir(),
-		"--format", "body",
+		"--format", "text",
 		"run", "demo", "summary",
 	})
 	if exitCode != ExitAssertion {
@@ -1661,7 +1674,7 @@ extract_group = 1
 extract_all = true
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "ids"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "text", "run", "demo", "ids"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1694,7 +1707,7 @@ extract_group = 1
 	stdout, stderr, exitCode := runMain(t, []string{
 		"--config", configDir,
 		"--state", t.TempDir(),
-		"--format", "body",
+		"--format", "text",
 		"run", "demo", "ids",
 		"--extract", `{"group":"OFFICE"}`,
 	})
@@ -1774,7 +1787,7 @@ extract_group = 1
 	stdout, stderr, exitCode := runMain(t, []string{
 		"--config", configDir,
 		"--state", t.TempDir(),
-		"--format", "body",
+		"--format", "text",
 		"run", "demo", "ids",
 	})
 	if exitCode != ExitAssertion {
@@ -1806,7 +1819,7 @@ extract_type = "jq"
 extract_expr = ".body.items[]?.id"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "body", "run", "demo", "ids"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", t.TempDir(), "--format", "text", "run", "demo", "ids"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1880,6 +1893,7 @@ path = "/login"
 [actions.profile]
 description = "Load profile"
 path = "/me"
+params = [{ name = "user_id", type = "string", required = true, description = "Profile id", example = "42" }]
 extracts = [{ name = "group", type = "string", description = "Filter group", example = "WRM" }]
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write alpha config: %v", err)
@@ -1935,20 +1949,20 @@ path = "/search"
 	if exitCode != ExitSuccess {
 		t.Fatalf("actions failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
-	if !strings.Contains(stdout, "action: signin") || !strings.Contains(stdout, "action: profile") {
+	if !strings.Contains(stdout, "site: alpha") {
+		t.Fatalf("expected site header in actions output: %q", stdout)
+	}
+	if !strings.Contains(stdout, "ACTION") || !strings.Contains(stdout, "DESCRIPTION") {
+		t.Fatalf("expected actions table header: %q", stdout)
+	}
+	if !strings.Contains(stdout, "signin") || !strings.Contains(stdout, "profile") {
 		t.Fatalf("unexpected actions output: %q", stdout)
 	}
-	if !strings.Contains(stdout, "method: POST") || !strings.Contains(stdout, "path: /login") {
-		t.Fatalf("expected method/path details in actions output: %q", stdout)
+	if !strings.Contains(stdout, "Sign in") || !strings.Contains(stdout, "Load profile") {
+		t.Fatalf("expected action descriptions in actions output: %q", stdout)
 	}
-	if !strings.Contains(stdout, "params: []") || !strings.Contains(stdout, "extracts:\n  - name: group") {
-		t.Fatalf("expected yaml-style params/extracts sections in actions output: %q", stdout)
-	}
-	if !strings.Contains(stdout, "type: string") || !strings.Contains(stdout, "required: false") || !strings.Contains(stdout, `example: "WRM"`) {
-		t.Fatalf("expected extract spec details in actions output: %q", stdout)
-	}
-	if strings.Contains(stdout, "LOGIN") || strings.Contains(stdout, "yes") || strings.Contains(stdout, "no") {
-		t.Fatalf("unexpected login marker in actions output: %q", stdout)
+	if strings.Contains(stdout, "action:") || strings.Contains(stdout, "description:") || strings.Contains(stdout, "method:") || strings.Contains(stdout, "path:") || strings.Contains(stdout, "params:") || strings.Contains(stdout, "extracts:") {
+		t.Fatalf("expected tabular actions output: %q", stdout)
 	}
 
 	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "actions", "alpha"})
@@ -1969,11 +1983,14 @@ path = "/search"
 			if action.Method != "GET" || action.Path != "/me" {
 				t.Fatalf("expected method/path details for profile action: %#v", action)
 			}
-			if len(action.Params) != 0 {
-				t.Fatalf("expected empty params for profile action: %#v", action)
+			if len(action.Params) != 1 {
+				t.Fatalf("expected param count for profile action: %#v", action)
 			}
 			if len(action.Extracts) != 1 {
 				t.Fatalf("expected extract count for profile action: %#v", action)
+			}
+			if action.Params[0].Name != "user_id" || action.Params[0].Type != "string" || action.Params[0].Description != "Profile id" || !action.Params[0].Required {
+				t.Fatalf("unexpected param spec for profile action: %#v", action)
 			}
 			if action.Extracts[0].Name != "group" || action.Extracts[0].Type != "string" || action.Extracts[0].Description != "Filter group" {
 				t.Fatalf("unexpected extract spec for profile action: %#v", action)
@@ -2003,7 +2020,7 @@ path = "/search"
 	if err := json.Unmarshal([]byte(stdout), &actionResp); err != nil {
 		t.Fatalf("unmarshal action output: %v", err)
 	}
-	if actionResp.Action.Name != "profile" || len(actionResp.Action.Extracts) != 1 || actionResp.Action.Extracts[0].Name != "group" {
+	if actionResp.Action.Name != "profile" || len(actionResp.Action.Params) != 1 || actionResp.Action.Params[0].Name != "user_id" || len(actionResp.Action.Extracts) != 1 || actionResp.Action.Extracts[0].Name != "group" {
 		t.Fatalf("unexpected action response: %#v", actionResp)
 	}
 
@@ -2011,11 +2028,26 @@ path = "/search"
 	if exitCode != ExitSuccess {
 		t.Fatalf("action text failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
-	if !strings.Contains(stdout, "extractor: -") || !strings.Contains(stdout, "params: []") {
-		t.Fatalf("expected action text metadata and empty yaml params: %q", stdout)
+	if !strings.Contains(stdout, "Usage:\n  httpx run alpha profile [flags]") {
+		t.Fatalf("expected usage section in action text: %q", stdout)
 	}
-	if !strings.Contains(stdout, "extracts:\n  - name: group") || !strings.Contains(stdout, "description: Filter group") || !strings.Contains(stdout, `example: "WRM"`) {
-		t.Fatalf("expected action text yaml extracts: %q", stdout)
+	if !strings.Contains(stdout, "\nDescription:\n  Load profile\n") {
+		t.Fatalf("expected description section in action text: %q", stdout)
+	}
+	if !strings.Contains(stdout, "\nFlags:\n") || !strings.Contains(stdout, "--param key=value") || !strings.Contains(stdout, "--extract <json-object>") || !strings.Contains(stdout, "-h, --help") {
+		t.Fatalf("expected flags section in action text: %q", stdout)
+	}
+	if !strings.Contains(stdout, "\nParams fields:\n") || !strings.Contains(stdout, "name     type    required  default") || !strings.Contains(stdout, `user_id  string  yes       -        Profile id   "42"`) {
+		t.Fatalf("expected params table in action text: %q", stdout)
+	}
+	if !strings.Contains(stdout, "\nExtracts fields:\n") || !strings.Contains(stdout, "name   type    required  default") {
+		t.Fatalf("expected extracts table in action text: %q", stdout)
+	}
+	if !strings.Contains(stdout, `group  string  no        -        Filter group  "WRM"`) {
+		t.Fatalf("expected extract row in action text: %q", stdout)
+	}
+	if !strings.Contains(stdout, "\nExamples:\n") || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42`) || !strings.Contains(stdout, `httpx run alpha profile --extract '{"group":"WRM"}'`) {
+		t.Fatalf("expected examples section in action text: %q", stdout)
 	}
 
 	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "state", "alpha"})

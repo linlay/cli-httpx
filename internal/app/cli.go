@@ -142,17 +142,17 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner
 	flags.DurationVar(&options.global.Timeout, "timeout", 0, "Request timeout override")
 	flags.BoolVar(&options.global.Reveal, "reveal", false, "Reveal sensitive values in inspect output")
 	flags.BoolVar(&options.version, "version", false, "Print version information")
-	flags.Var(&formatValue{options: options}, "format", "Output format: text, json, or body")
+	flags.Var(&formatValue{options: options}, "format", "Output format: text or json")
 	flags.Var((*paramValues)(&options.global.Params), "param", "Runtime request parameter in key=value form")
 	flags.Var(&extractValue{value: &options.global.ExtractInput}, "extract", "Runtime extractor input as a JSON object")
 
 	root.AddCommand(
 		newActionRequestCommand(commandRun, "run <site> <action>", "Execute an action request", cobra.ExactArgs(2), options, run),
-		newActionRequestCommand(commandInspect, "inspect <site> <action>", "Compile an action request without executing it", cobra.ExactArgs(2), options, run),
+		newActionRequestCommand(commandInspect, "inspect <site> <action>", "Inspect a compiled action request without executing it", cobra.ExactArgs(2), options, run),
 		newActionRequestCommand(commandLogin, "login <site>", "Execute the site's configured login action", cobra.ExactArgs(1), options, run),
 		newActionRequestCommand(commandSites, "sites", "List available sites", cobra.NoArgs, options, run),
 		newActionRequestCommand(commandSite, "site <site>", "Show site details", cobra.ExactArgs(1), options, run),
-		newActionRequestCommand(commandAction, "action <site> <action>", "Show action details", cobra.ExactArgs(2), options, run),
+		newActionRequestCommand(commandAction, "action <site> <action>", "Show action usage and input contract", cobra.ExactArgs(2), options, run),
 		newActionRequestCommand(commandActions, "actions <site>", "List actions for a site", cobra.ExactArgs(1), options, run),
 		newActionRequestCommand(commandState, "state <site>", "Show stored state summary for a site", cobra.ExactArgs(1), options, run),
 		newVersionCommand(),
@@ -239,7 +239,7 @@ func buildCommandRequest(kind commandKind, args []string, options *cliOptions) (
 	if !options.formatSet {
 		switch kind {
 		case commandRun, commandLogin:
-			req.Options.Format = formatBody
+			req.Options.Format = formatText
 		case commandInspect:
 			req.Options.Format = formatJSON
 		case commandSites, commandSite, commandAction, commandActions, commandState:
@@ -273,9 +273,11 @@ func (o *cliOptions) snapshot() globalOptions {
 
 func setFormat(opts *globalOptions, value string) error {
 	switch outputFormat(value) {
-	case formatText, formatJSON, formatBody:
+	case formatText, formatJSON:
 		opts.Format = outputFormat(value)
 		return nil
+	case "body":
+		return fmt.Errorf("unsupported format %q; use %q instead", value, formatText)
 	default:
 		return fmt.Errorf("unsupported format %q", value)
 	}
@@ -284,7 +286,7 @@ func setFormat(opts *globalOptions, value string) error {
 func validateCommandOptions(req *commandRequest, formatSet bool) error {
 	switch req.Command {
 	case commandRun, commandLogin:
-		if req.Options.Format != formatBody && req.Options.Format != formatJSON {
+		if req.Options.Format != formatText && req.Options.Format != formatJSON {
 			return fmt.Errorf("--format %s is not supported with %s", req.Options.Format, req.Command)
 		}
 		if req.Command == commandLogin && req.Options.ExtractInput != nil {
