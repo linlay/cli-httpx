@@ -2084,6 +2084,51 @@ func TestMainPrintsVersionFlag(t *testing.T) {
 	}
 }
 
+func TestMainHelpUsesCobraCommandTree(t *testing.T) {
+	stdout, stderr, exitCode := runMain(t, []string{"help"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success exit code, got %d", exitCode)
+	}
+	if strings.Count(stdout, "Usage:") != 1 {
+		t.Fatalf("expected single usage block, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "Available Commands:") || !strings.Contains(stdout, "run") || !strings.Contains(stdout, "version") {
+		t.Fatalf("unexpected help output: %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestMainSubcommandHelpIncludesInheritedFlags(t *testing.T) {
+	stdout, stderr, exitCode := runMain(t, []string{"inspect", "--help"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success exit code, got %d", exitCode)
+	}
+	if !strings.Contains(stdout, "httpx inspect <site> <action>") {
+		t.Fatalf("unexpected inspect help output: %q", stdout)
+	}
+	if !strings.Contains(stdout, "--reveal") || !strings.Contains(stdout, "--format") {
+		t.Fatalf("expected inherited flags in help output: %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestMainUnknownCommandReturnsConfigExit(t *testing.T) {
+	stdout, stderr, exitCode := runMain(t, []string{"nope"})
+	if exitCode != ExitConfig {
+		t.Fatalf("expected config exit code, got %d", exitCode)
+	}
+	if stdout != "" {
+		t.Fatalf("unexpected stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, `unknown command "nope" for "httpx"`) {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 
@@ -2110,7 +2155,7 @@ func runMain(t *testing.T, args []string) (string, string, int) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	exitCode := Main(args, &stdout, &stderr)
+	exitCode := Execute(args, nil, &stdout, &stderr)
 	return stdout.String(), stderr.String(), exitCode
 }
 

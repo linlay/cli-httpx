@@ -35,6 +35,12 @@
 - `execute`：真正发起 HTTP 请求、处理 cookie、执行 `extract_*`/`save`
 - `envelope/state`：将结果输出为 body 或 json，并把本地状态落盘
 
+CLI 框架约定：
+
+- 当前命令层使用 `spf13/cobra`
+- 根命令负责全局参数和子命令装配
+- `commandRequest` 是 CLI 层到 runtime 的稳定边界，Cobra 类型不进入 runtime/config/state 逻辑
+
 ## 配置语义
 
 每个 site 对应一个 `<site>.toml` 文件。
@@ -374,8 +380,9 @@ CLI 有两种主要输出模式：
 关键目录职责：
 
 - `cmd/httpx`：CLI 主入口
-- `internal/app`：参数解析、配置解析、请求编译、执行、state 管理
+- `internal/app`：Cobra 根命令/子命令、退出码语义、配置解析、请求编译、执行、state 管理
 - `internal/buildinfo`：承接构建注入的版本元信息
+- `third_party/cobra`：仓库内固定的 Cobra 依赖副本
 - `scripts/release`：本地发布打包脚本
 - `examples`：配置示例
 

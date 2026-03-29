@@ -110,6 +110,8 @@ httpx --config ./examples --format json run <site> <action>
 httpx run <site> --format json --config ./examples <action>
 ```
 
+CLI 现在使用 Cobra 风格的根命令和子命令组织；帮助信息统一通过 `httpx help`、`httpx <subcommand> --help` 查看。
+
 常用全局参数：
 
 - `--config <dir>`：配置目录，读取 `<dir>/<site>.toml`

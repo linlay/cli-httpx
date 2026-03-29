@@ -2,17 +2,33 @@ package app
 
 import (
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/linlay/cli-httpx/internal/buildinfo"
+	"github.com/spf13/cobra"
 )
 
+type requestRunner func(commandRequest) int
+
+type cliOptions struct {
+	global    globalOptions
+	formatSet bool
+	version   bool
+}
+
 type paramValues map[string]string
+
+type formatValue struct {
+	options *cliOptions
+}
+
+type extractValue struct {
+	value *map[string]any
+	set   bool
+}
 
 func (p *paramValues) String() string {
 	if p == nil {
@@ -37,6 +53,48 @@ func (p *paramValues) Set(raw string) error {
 	return nil
 }
 
+func (v *formatValue) String() string {
+	if v == nil || v.options == nil {
+		return ""
+	}
+	return string(v.options.global.Format)
+}
+
+func (v *formatValue) Set(raw string) error {
+	if v == nil || v.options == nil {
+		return fmt.Errorf("internal error: missing format target")
+	}
+	if err := setFormat(&v.options.global, raw); err != nil {
+		return err
+	}
+	v.options.formatSet = true
+	return nil
+}
+
+func (v *extractValue) String() string {
+	if v == nil || v.value == nil || *v.value == nil {
+		return ""
+	}
+	data, err := json.Marshal(*v.value)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func (v *extractValue) Set(raw string) error {
+	if v.set {
+		return fmt.Errorf("--extract may only be provided once")
+	}
+	extractInput, err := parseExtractInput(raw)
+	if err != nil {
+		return err
+	}
+	*v.value = extractInput
+	v.set = true
+	return nil
+}
+
 func parseExtractInput(raw string) (map[string]any, error) {
 	var value any
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
@@ -49,256 +107,168 @@ func parseExtractInput(raw string) (map[string]any, error) {
 	return object, nil
 }
 
-func Main(args []string, stdout io.Writer, stderr io.Writer) int {
-	if isVersionCommand(args) {
-		fmt.Fprintln(stdout, buildinfo.Summary())
-		return ExitSuccess
+func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner) *cobra.Command {
+	options := &cliOptions{
+		global: globalOptions{
+			ConfigDir: defaultConfigDir(),
+			StateDir:  defaultStateDir(),
+		},
 	}
 
-	req, err := parseArgs(args)
-	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, usageText())
-			return ExitSuccess
-		}
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return ExitConfig
+	root := &cobra.Command{
+		Use:           "httpx",
+		Short:         "HTTP CLI for scripted, stateful site actions",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if options.version {
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), buildinfo.Summary())
+				return err
+			}
+			return cmd.Help()
+		},
 	}
+	if stdin != nil {
+		root.SetIn(stdin)
+	}
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.CompletionOptions.DisableDefaultCmd = true
 
-	runtime := NewRuntime(stdout, stderr)
-	return runtime.Run(req)
+	flags := root.PersistentFlags()
+	flags.StringVar(&options.global.ConfigDir, "config", options.global.ConfigDir, "Configuration directory")
+	flags.StringVar(&options.global.StateDir, "state", options.global.StateDir, "State directory")
+	flags.DurationVar(&options.global.Timeout, "timeout", 0, "Request timeout override")
+	flags.BoolVar(&options.global.Reveal, "reveal", false, "Reveal sensitive values in inspect output")
+	flags.BoolVar(&options.version, "version", false, "Print version information")
+	flags.Var(&formatValue{options: options}, "format", "Output format: text, json, or body")
+	flags.Var((*paramValues)(&options.global.Params), "param", "Runtime request parameter in key=value form")
+	flags.Var(&extractValue{value: &options.global.ExtractInput}, "extract", "Runtime extractor input as a JSON object")
+
+	root.AddCommand(
+		newActionRequestCommand(commandRun, "run <site> <action>", "Execute an action request", cobra.ExactArgs(2), options, run),
+		newActionRequestCommand(commandInspect, "inspect <site> <action>", "Compile an action request without executing it", cobra.ExactArgs(2), options, run),
+		newActionRequestCommand(commandLogin, "login <site>", "Execute the site's configured login action", cobra.ExactArgs(1), options, run),
+		newActionRequestCommand(commandSites, "sites", "List available sites", cobra.NoArgs, options, run),
+		newActionRequestCommand(commandSite, "site <site>", "Show site details", cobra.ExactArgs(1), options, run),
+		newActionRequestCommand(commandAction, "action <site> <action>", "Show action details", cobra.ExactArgs(2), options, run),
+		newActionRequestCommand(commandActions, "actions <site>", "List actions for a site", cobra.ExactArgs(1), options, run),
+		newActionRequestCommand(commandState, "state <site>", "Show stored state summary for a site", cobra.ExactArgs(1), options, run),
+		newVersionCommand(),
+	)
+
+	return root
+}
+
+func newActionRequestCommand(kind commandKind, use, short string, args cobra.PositionalArgs, options *cliOptions, run requestRunner) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  args,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req, err := buildCommandRequest(kind, args, options)
+			if err != nil {
+				return &exitError{Code: ExitConfig, Err: err}
+			}
+			if code := run(req); code != ExitSuccess {
+				return &exitError{Code: code}
+			}
+			return nil
+		},
+	}
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), buildinfo.Summary())
+			return err
+		},
+	}
 }
 
 func parseArgs(args []string) (commandRequest, error) {
-	opts := globalOptions{
-		ConfigDir: defaultConfigDir(),
-		StateDir:  defaultStateDir(),
-	}
-	rest, formatSet, err := parseGlobalArgs(args, &opts)
-	if err != nil {
+	var (
+		req      commandRequest
+		captured bool
+	)
+
+	root := newRootCommand(nil, io.Discard, io.Discard, func(next commandRequest) int {
+		req = next
+		captured = true
+		return ExitSuccess
+	})
+	root.SetArgs(args)
+
+	if err := root.Execute(); err != nil {
 		return commandRequest{}, err
 	}
-	if len(rest) == 0 {
+	if !captured {
 		return commandRequest{}, flag.ErrHelp
 	}
+	return req, nil
+}
 
-	cmd := commandKind(rest[0])
-	switch cmd {
-	case commandRun:
-		if len(rest) != 3 {
-			return commandRequest{}, usageError()
-		}
-		req := commandRequest{Command: cmd, Site: rest[1], Action: rest[2], Options: opts}
-		if err := validateSiteName(req.Site); err != nil {
-			return commandRequest{}, err
-		}
-		if !formatSet {
-			req.Options.Format = formatBody
-		}
-		if err := validateCommandOptions(&req, formatSet); err != nil {
-			return commandRequest{}, err
-		}
-		return req, nil
-	case commandInspect:
-		if len(rest) != 3 {
-			return commandRequest{}, usageError()
-		}
-		req := commandRequest{Command: cmd, Site: rest[1], Action: rest[2], Options: opts}
-		if err := validateSiteName(req.Site); err != nil {
-			return commandRequest{}, err
-		}
-		if !formatSet {
-			req.Options.Format = formatJSON
-		}
-		if err := validateCommandOptions(&req, formatSet); err != nil {
-			return commandRequest{}, err
-		}
-		return req, nil
-	case commandLogin:
-		if len(rest) != 2 {
-			return commandRequest{}, usageError()
-		}
-		req := commandRequest{Command: cmd, Site: rest[1], Options: opts}
-		if err := validateSiteName(req.Site); err != nil {
-			return commandRequest{}, err
-		}
-		if !formatSet {
-			req.Options.Format = formatBody
-		}
-		if err := validateCommandOptions(&req, formatSet); err != nil {
-			return commandRequest{}, err
-		}
-		return req, nil
+func buildCommandRequest(kind commandKind, args []string, options *cliOptions) (commandRequest, error) {
+	req := commandRequest{
+		Command: kind,
+		Options: options.snapshot(),
+	}
+
+	switch kind {
+	case commandRun, commandInspect, commandAction:
+		req.Site = args[0]
+		req.Action = args[1]
+	case commandLogin, commandSite, commandActions, commandState:
+		req.Site = args[0]
 	case commandSites:
-		if len(rest) != 1 {
-			return commandRequest{}, usageError()
-		}
-		req := commandRequest{Command: cmd, Options: opts}
-		if !formatSet {
-			req.Options.Format = formatText
-		}
-		if err := validateCommandOptions(&req, formatSet); err != nil {
-			return commandRequest{}, err
-		}
-		return req, nil
-	case commandAction:
-		if len(rest) != 3 {
-			return commandRequest{}, usageError()
-		}
-		req := commandRequest{Command: cmd, Site: rest[1], Action: rest[2], Options: opts}
-		if err := validateSiteName(req.Site); err != nil {
-			return commandRequest{}, err
-		}
-		if !formatSet {
-			req.Options.Format = formatText
-		}
-		if err := validateCommandOptions(&req, formatSet); err != nil {
-			return commandRequest{}, err
-		}
-		return req, nil
-	case commandSite, commandActions, commandState:
-		if len(rest) != 2 {
-			return commandRequest{}, usageError()
-		}
-		req := commandRequest{Command: cmd, Site: rest[1], Options: opts}
-		if err := validateSiteName(req.Site); err != nil {
-			return commandRequest{}, err
-		}
-		if !formatSet {
-			req.Options.Format = formatText
-		}
-		if err := validateCommandOptions(&req, formatSet); err != nil {
-			return commandRequest{}, err
-		}
-		return req, nil
-	case "help":
-		if len(rest) != 1 {
-			return commandRequest{}, usageError()
-		}
-		return commandRequest{}, flag.ErrHelp
 	default:
-		return commandRequest{}, usageError()
+		return commandRequest{}, fmt.Errorf("unsupported command %q", kind)
 	}
-}
 
-func isVersionCommand(args []string) bool {
-	return len(args) == 1 && (args[0] == "version" || args[0] == "--version")
-}
-
-func parseGlobalArgs(args []string, opts *globalOptions) ([]string, bool, error) {
-	rest := make([]string, 0, len(args))
-	formatSet := false
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "-h" || arg == "--help":
-			return nil, false, flag.ErrHelp
-		case arg == "--reveal":
-			opts.Reveal = true
-		case arg == "--config":
-			value, next, err := requireFlagValue(args, i, "--config")
-			if err != nil {
-				return nil, false, err
-			}
-			opts.ConfigDir = value
-			i = next
-		case strings.HasPrefix(arg, "--config="):
-			opts.ConfigDir = strings.TrimPrefix(arg, "--config=")
-		case arg == "--format":
-			value, next, err := requireFlagValue(args, i, "--format")
-			if err != nil {
-				return nil, false, err
-			}
-			if err := setFormat(opts, value); err != nil {
-				return nil, false, err
-			}
-			formatSet = true
-			i = next
-		case strings.HasPrefix(arg, "--format="):
-			if err := setFormat(opts, strings.TrimPrefix(arg, "--format=")); err != nil {
-				return nil, false, err
-			}
-			formatSet = true
-		case arg == "--timeout":
-			value, next, err := requireFlagValue(args, i, "--timeout")
-			if err != nil {
-				return nil, false, err
-			}
-			timeout, err := time.ParseDuration(value)
-			if err != nil {
-				return nil, false, fmt.Errorf("invalid --timeout %q: %v", value, err)
-			}
-			opts.Timeout = timeout
-			i = next
-		case strings.HasPrefix(arg, "--timeout="):
-			value := strings.TrimPrefix(arg, "--timeout=")
-			timeout, err := time.ParseDuration(value)
-			if err != nil {
-				return nil, false, fmt.Errorf("invalid --timeout %q: %v", value, err)
-			}
-			opts.Timeout = timeout
-		case arg == "--state":
-			value, next, err := requireFlagValue(args, i, "--state")
-			if err != nil {
-				return nil, false, err
-			}
-			opts.StateDir = value
-			i = next
-		case strings.HasPrefix(arg, "--state="):
-			opts.StateDir = strings.TrimPrefix(arg, "--state=")
-		case arg == "--extract":
-			value, next, err := requireFlagValue(args, i, "--extract")
-			if err != nil {
-				return nil, false, err
-			}
-			if opts.ExtractInput != nil {
-				return nil, false, fmt.Errorf("--extract may only be provided once")
-			}
-			extractInput, err := parseExtractInput(value)
-			if err != nil {
-				return nil, false, err
-			}
-			opts.ExtractInput = extractInput
-			i = next
-		case strings.HasPrefix(arg, "--extract="):
-			if opts.ExtractInput != nil {
-				return nil, false, fmt.Errorf("--extract may only be provided once")
-			}
-			extractInput, err := parseExtractInput(strings.TrimPrefix(arg, "--extract="))
-			if err != nil {
-				return nil, false, err
-			}
-			opts.ExtractInput = extractInput
-		case arg == "--param":
-			value, next, err := requireFlagValue(args, i, "--param")
-			if err != nil {
-				return nil, false, err
-			}
-			if err := (*paramValues)(&opts.Params).Set(value); err != nil {
-				return nil, false, err
-			}
-			i = next
-		case strings.HasPrefix(arg, "--param="):
-			if err := (*paramValues)(&opts.Params).Set(strings.TrimPrefix(arg, "--param=")); err != nil {
-				return nil, false, err
-			}
-		case strings.HasPrefix(arg, "--"):
-			return nil, false, fmt.Errorf("unknown flag %q", arg)
-		default:
-			rest = append(rest, arg)
+	if req.Site != "" {
+		if err := validateSiteName(req.Site); err != nil {
+			return commandRequest{}, err
 		}
 	}
 
-	return rest, formatSet, nil
+	if !options.formatSet {
+		switch kind {
+		case commandRun, commandLogin:
+			req.Options.Format = formatBody
+		case commandInspect:
+			req.Options.Format = formatJSON
+		case commandSites, commandSite, commandAction, commandActions, commandState:
+			req.Options.Format = formatText
+		}
+	}
+
+	if err := validateCommandOptions(&req, options.formatSet); err != nil {
+		return commandRequest{}, err
+	}
+
+	return req, nil
 }
 
-func requireFlagValue(args []string, index int, name string) (string, int, error) {
-	next := index + 1
-	if next >= len(args) {
-		return "", index, fmt.Errorf("flag %s requires a value", name)
+func (o *cliOptions) snapshot() globalOptions {
+	result := o.global
+	if len(o.global.Params) > 0 {
+		result.Params = make(map[string]string, len(o.global.Params))
+		for key, value := range o.global.Params {
+			result.Params[key] = value
+		}
 	}
-	return args[next], next, nil
+	if o.global.ExtractInput != nil {
+		result.ExtractInput = make(map[string]any, len(o.global.ExtractInput))
+		for key, value := range o.global.ExtractInput {
+			result.ExtractInput[key] = value
+		}
+	}
+	return result
 }
 
 func setFormat(opts *globalOptions, value string) error {
@@ -351,10 +321,6 @@ func validateCommandOptions(req *commandRequest, formatSet bool) error {
 	return nil
 }
 
-func usageError() error {
-	return fmt.Errorf("usage: httpx <subcommand> [args]")
-}
-
 func validateSiteName(site string) error {
 	site = strings.TrimSpace(site)
 	if site == "" {
@@ -373,39 +339,4 @@ func isReservedWord(value string) bool {
 	default:
 		return false
 	}
-}
-
-func usageText() string {
-	lines := []string{
-		"Usage:",
-		"  httpx run <site> <action>",
-		"  httpx inspect <site> <action>",
-		"  httpx login <site>",
-		"  httpx sites",
-		"  httpx site <site>",
-		"  httpx action <site> <action>",
-		"  httpx actions <site>",
-		"  httpx state <site>",
-		"  httpx version",
-		"  httpx --version",
-		"  httpx help",
-		"",
-		"Global flags (can appear before or after the subcommand):",
-		"  --config <dir>",
-		"  --state <path>",
-		"  --format text|json|body",
-		"  --timeout <duration>",
-		"  --param key=value",
-		"  --extract <json-object>",
-		"  --reveal",
-		"",
-		"Format defaults:",
-		"  run/login = body",
-		"  inspect = json",
-		"  sites/site/action/actions/state = text",
-		"",
-		"Notes:",
-		"  version = 1 inside TOML site files is the config schema version, not the CLI release version.",
-	}
-	return strings.Join(lines, "\n") + "\n"
 }
