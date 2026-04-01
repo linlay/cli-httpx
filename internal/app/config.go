@@ -67,7 +67,7 @@ type action struct {
 	Headers        map[string]any    `toml:"headers"`
 	Cookies        map[string]any    `toml:"cookies"`
 	Query          map[string]any    `toml:"query"`
-	Body           any               `toml:"body"`
+	Body           map[string]any    `toml:"body"`
 	Form           map[string]any    `toml:"form"`
 	ExpectStatus   any               `toml:"expect_status"`
 	ExtractType    string            `toml:"extract_type"`
@@ -252,7 +252,7 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 		Headers:      mergeMap(cfg.Headers, act.Headers),
 		Cookies:      mergeMap(cfg.Cookies, act.Cookies),
 		Query:        mergeMap(cfg.Query, act.Query),
-		Body:         act.Body,
+		Body:         cloneJSONValue(act.Body),
 		Form:         copyMap(act.Form),
 		ExpectStatus: expectStatus,
 		Extractor:    extractor,

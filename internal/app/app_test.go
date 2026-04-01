@@ -107,6 +107,40 @@ expr = ".body"
 	}
 }
 
+func TestLoadConfigAcceptsNestedBodyTable(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.create]
+description = "Create issue"
+method = "POST"
+path = "/issues"
+expect_status = 201
+
+[actions.create.body.fields]
+project = { key = "PRJ" }
+title = { from = "param", key = "title" }
+`)
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	fields, ok := cfg.Actions["create"].Body["fields"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested body.fields map, got %#v", cfg.Actions["create"].Body["fields"])
+	}
+	project, ok := fields["project"].(map[string]any)
+	if !ok || project["key"] != "PRJ" {
+		t.Fatalf("unexpected nested project payload: %#v", fields["project"])
+	}
+}
+
 func TestLoadConfigRejectsDuplicateActionInputSpecNames(t *testing.T) {
 	t.Parallel()
 
@@ -439,7 +473,7 @@ func TestParseArgsSupportsExtractJSON(t *testing.T) {
 
 	req, err := parseArgs([]string{
 		"run", "demo", "list",
-		"--extract", `{"days":7,"group":["WRM","OFFICE"]}`,
+		"--extract", `{"days":7,"group":["GROUP_A","GROUP_B"]}`,
 	})
 	if err != nil {
 		t.Fatalf("parseArgs failed: %v", err)
@@ -448,7 +482,7 @@ func TestParseArgsSupportsExtractJSON(t *testing.T) {
 		t.Fatalf("unexpected extract input: %#v", req.Options.ExtractInput)
 	}
 	groups, ok := req.Options.ExtractInput["group"].([]any)
-	if !ok || len(groups) != 2 || groups[0] != "WRM" || groups[1] != "OFFICE" {
+	if !ok || len(groups) != 2 || groups[0] != "GROUP_A" || groups[1] != "GROUP_B" {
 		t.Fatalf("unexpected extract input groups: %#v", req.Options.ExtractInput)
 	}
 }
@@ -588,7 +622,7 @@ func TestParseArgsRejectsInvalidCombinations(t *testing.T) {
 		{"login", "--format", "body", "demo"},
 		{"run", "demo", "list", "--extract", `[]`},
 		{"run", "demo", "list", "--extract", `{"days":`},
-		{"run", "demo", "list", "--extract", `{"days":7}`, "--extract", `{"group":"WRM"}`},
+		{"run", "demo", "list", "--extract", `{"days":7}`, "--extract", `{"group":"GROUP_A"}`},
 		{"sites", "--format", "body"},
 		{"sites", "--param", "user=alice"},
 		{"sites", "--extract", `{"days":7}`},
@@ -961,7 +995,7 @@ base_url = %q
 description = "Submit login"
 method = "POST"
 path = "/login"
-form = { data = { UserId = "alice", Password = "secret", SystemType = "100", ClientType = "2" } }
+form = { data = { user = "alice", secret = "secret", kind = "100", mode = "2" } }
 `, server.URL))
 
 	cfg, err := loadConfig(configPath)
@@ -988,7 +1022,7 @@ form = { data = { UserId = "alice", Password = "secret", SystemType = "100", Cli
 	if !strings.HasPrefix(encodedBody, "data=") {
 		t.Fatalf("expected form field named data, got %q", encodedBody)
 	}
-	if !strings.Contains(encodedBody, "%22UserId%22%3A%22alice%22") {
+	if !strings.Contains(encodedBody, "%22user%22%3A%22alice%22") {
 		t.Fatalf("expected nested object to be JSON-encoded in form body, got %q", encodedBody)
 	}
 
@@ -996,7 +1030,7 @@ form = { data = { UserId = "alice", Password = "secret", SystemType = "100", Cli
 	if !ok {
 		t.Fatalf("expected inspect body to be string form map, got %#v", compiled.Body)
 	}
-	if !strings.Contains(body["data"], `"UserId":"alice"`) {
+	if !strings.Contains(body["data"], `"user":"alice"`) {
 		t.Fatalf("expected nested object stringified in inspect body, got %#v", body)
 	}
 }
@@ -1124,12 +1158,12 @@ description = "Demo site"
 base_url = %q
 [login]
 path = "/login"
-save = { "auth.authorization" = "\"Bearer \" + .body.token" }
+save = { "session.auth_header" = "\"Bearer \" + .body.token" }
 
 [actions.data]
 description = "Load data"
 path = "/data"
-headers = { Authorization = { from = "state", key = "auth.authorization" } }
+headers = { Authorization = { from = "state", key = "session.auth_header" } }
 extract_type = "jq"
 extract_expr = ".body.value"
 `, server.URL))
@@ -1144,7 +1178,7 @@ extract_expr = ".body.value"
 	if err != nil {
 		t.Fatalf("loadState failed: %v", err)
 	}
-	if state.Values["auth.authorization"] != "Bearer token-123" {
+	if state.Values["session.auth_header"] != "Bearer token-123" {
 		t.Fatalf("expected saved token, got %#v", state.Values)
 	}
 	if len(state.Cookies) == 0 {
@@ -1210,7 +1244,7 @@ base_url = %q
 path = "/login"
 body_format = "json"
 basic_auth = true
-save = { "auth.authorization" = "\"Bearer \" + .body.token" }
+save = { "session.auth_header" = "\"Bearer \" + .body.token" }
 `, server.URL))
 
 	stateDir := t.TempDir()
@@ -1230,7 +1264,7 @@ save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 	if err != nil {
 		t.Fatalf("loadState failed: %v", err)
 	}
-	if state.Values["auth.authorization"] != "Bearer token-456" {
+	if state.Values["session.auth_header"] != "Bearer token-456" {
 		t.Fatalf("unexpected saved state: %#v", state.Values)
 	}
 }
@@ -1296,9 +1330,9 @@ func TestRunSupportsExplicitCookiesFromState(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"session_id":"session-123"}`))
 		case "/me":
-			cookie, err := r.Cookie("oem.sessionid")
+			cookie, err := r.Cookie("session.id")
 			if err != nil || cookie.Value != "session-123" {
-				http.Error(w, "missing oem.sessionid", http.StatusForbidden)
+				http.Error(w, "missing session.id", http.StatusForbidden)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -1316,12 +1350,12 @@ description = "Demo site"
 base_url = %q
 [login]
 path = "/login"
-save = { "oem.sessionid" = ".body.session_id" }
+save = { "session.id" = ".body.session_id" }
 
 [actions.me]
 description = "Load profile"
 path = "/me"
-cookies = { "oem.sessionid" = { from = "state", key = "oem.sessionid" } }
+cookies = { "session.id" = { from = "state", key = "session.id" } }
 extract_type = "jq"
 extract_expr = ".body.ok"
 `, server.URL))
@@ -1403,7 +1437,7 @@ func TestInspectRedactsDynamicPath(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := saveState(stateDir, "demo", &profileState{
 		Values: map[string]string{
-			"login.redirect_url": "https://sso.example.com/finish?ticket=abc",
+			"login.next_url": "https://example.com/finish?ticket=abc",
 		},
 	}); err != nil {
 		t.Fatalf("saveState failed: %v", err)
@@ -1416,7 +1450,7 @@ base_url = "https://example.com"
 
 [actions.finish]
 description = "Finish login"
-path = { from = "state", key = "login.redirect_url" }
+path = { from = "state", key = "login.next_url" }
 `)
 
 	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "inspect", "demo", "finish"})
@@ -1703,7 +1737,7 @@ func TestBodyFormatJQExtractorTreatsNullDataAsEmptyWhenCodeIsZero(t *testing.T) 
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"data":null,"msg":"成功"}`))
+		_, _ = w.Write([]byte(`{"code":0,"data":null,"msg":"ok"}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -1736,15 +1770,15 @@ def fail_payload($payload; $reason):
 .body as $payload
 | (
     if ($payload | type) != "object" then
-      fail_payload($payload; "todo summary payload body is not an object")
+      fail_payload($payload; "payload body is not an object")
     elif (($payload.code // 0) != 0) then
-      fail_payload($payload; "todo summary upstream returned non-zero code")
+      fail_payload($payload; "upstream returned non-zero code")
     elif ($payload.data == null) then
       []
     elif (($payload.data | type) == "array") then
       $payload.data
     else
-      fail_payload($payload; "todo summary payload data is not an array")
+      fail_payload($payload; "payload data is not an array")
     end
   ) as $source_items
 | .extract as $extract
@@ -1774,7 +1808,7 @@ func TestBodyFormatJQExtractorFailsClearlyWhenCodeIsNonZero(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":123,"data":null,"msg":"上游失败"}`))
+		_, _ = w.Write([]byte(`{"code":123,"data":null,"msg":"upstream error"}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -1807,15 +1841,15 @@ def fail_payload($payload; $reason):
 .body as $payload
 | (
     if ($payload | type) != "object" then
-      fail_payload($payload; "todo summary payload body is not an object")
+      fail_payload($payload; "payload body is not an object")
     elif (($payload.code // 0) != 0) then
-      fail_payload($payload; "todo summary upstream returned non-zero code")
+      fail_payload($payload; "upstream returned non-zero code")
     elif ($payload.data == null) then
       []
     elif (($payload.data | type) == "array") then
       $payload.data
     else
-      fail_payload($payload; "todo summary payload data is not an array")
+      fail_payload($payload; "payload data is not an array")
     end
   ) as $source_items
 | $source_items
@@ -1831,7 +1865,7 @@ def fail_payload($payload; $reason):
 	if exitCode != ExitAssertion {
 		t.Fatalf("expected assertion failure, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
-	if !strings.Contains(stderr, `todo summary upstream returned non-zero code; code=123; msg=上游失败; data_type=null`) {
+	if !strings.Contains(stderr, `upstream returned non-zero code; code=123; msg=upstream error; data_type=null`) {
 		t.Fatalf("unexpected stderr: %q", stderr)
 	}
 }
@@ -1871,7 +1905,7 @@ func TestBodyFormatOutputsRegexExtractorUsingExtractInput(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("group=WRM group=OFFICE"))
+		_, _ = w.Write([]byte("group=GROUP_A group=GROUP_B"))
 	}))
 	t.Cleanup(server.Close)
 
@@ -1893,12 +1927,12 @@ extract_group = 1
 		"--state", t.TempDir(),
 		"--format", "text",
 		"run", "demo", "ids",
-		"--extract", `{"group":"OFFICE"}`,
+		"--extract", `{"group":"GROUP_B"}`,
 	})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
-	if stdout != `OFFICE` {
+	if stdout != `GROUP_B` {
 		t.Fatalf("unexpected regex extractor output: %q", stdout)
 	}
 }
@@ -1907,7 +1941,7 @@ func TestJSONFormatReplacesBodyWithRegexExtractorResult(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("group=WRM group=OFFICE"))
+		_, _ = w.Write([]byte("group=GROUP_A group=GROUP_B"))
 	}))
 	t.Cleanup(server.Close)
 
@@ -1929,7 +1963,7 @@ extract_group = 1
 		"--state", t.TempDir(),
 		"--format", "json",
 		"run", "demo", "ids",
-		"--extract", `{"group":"OFFICE"}`,
+		"--extract", `{"group":"GROUP_B"}`,
 	})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success, got %d stderr=%s stdout=%s", exitCode, stderr, stdout)
@@ -1939,7 +1973,7 @@ extract_group = 1
 	if err := json.Unmarshal([]byte(stdout), &runOutput); err != nil {
 		t.Fatalf("unmarshal run output map: %v", err)
 	}
-	if runOutput["body"] != "OFFICE" {
+	if runOutput["body"] != "GROUP_B" {
 		t.Fatalf("unexpected body output: %#v", runOutput)
 	}
 	if _, exists := runOutput["extract"]; exists {
@@ -1951,7 +1985,7 @@ func TestBodyFormatRegexExtractorFailsWhenExtractInputMissing(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("group=WRM"))
+		_, _ = w.Write([]byte("group=GROUP_A"))
 	}))
 	t.Cleanup(server.Close)
 
@@ -2027,13 +2061,13 @@ base_url = %q
 description = "Secret request"
 path = "/secret"
 params = [{ name = "id", type = "string", required = true, description = "Lookup id", example = "42" }]
-extracts = [{ name = "group", type = "string", description = "Exact group match", example = "WRM" }]
+extracts = [{ name = "group", type = "string", description = "Exact group match", example = "GROUP_A" }]
 extract_type = "regex"
 extract_pattern = "token=([A-Za-z0-9_-]+)"
 extract_group = 1
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "secret", "--extract", `{"group":"WRM"}`})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "secret", "--extract", `{"group":"GROUP_A"}`})
 	if exitCode != ExitSuccess {
 		t.Fatalf("inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -2048,7 +2082,7 @@ extract_group = 1
 	if compiled.Extractor.Type != "regex" || compiled.Extractor.Pattern != "token=([A-Za-z0-9_-]+)" || compiled.Extractor.Group != 1 {
 		t.Fatalf("unexpected extractor: %#v", compiled.Extractor)
 	}
-	if compiled.ExtractInput["group"] != "WRM" {
+	if compiled.ExtractInput["group"] != "GROUP_A" {
 		t.Fatalf("unexpected extract input: %#v", compiled.ExtractInput)
 	}
 	if len(compiled.Params) != 1 || compiled.Params[0].Name != "id" {
@@ -2065,7 +2099,7 @@ func TestDiscoveryCommandsExposeUsableActionMetadata(t *testing.T) {
 
 	if err := os.WriteFile(filepath.Join(configDir, "alpha.toml"), []byte(strings.TrimSpace(`
 version = 1
-description = "Alpha site"
+description = "Sample site A"
 base_url = "https://alpha.example.com"
 [login]
 path = "/login"
@@ -2074,13 +2108,13 @@ path = "/login"
 description = "Load profile"
 path = "/me"
 params = [{ name = "user_id", type = "string", required = true, description = "Profile id", example = "42" }]
-extracts = [{ name = "group", type = "string", description = "Filter group", example = "WRM" }]
+extracts = [{ name = "group", type = "string", description = "Filter group", example = "GROUP_A" }]
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write alpha config: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(configDir, "beta.toml"), []byte(strings.TrimSpace(`
 version = 1
-description = "Beta site"
+description = "Sample site B"
 base_url = "https://beta.example.com"
 
 [actions.search]
@@ -2103,7 +2137,7 @@ path = "/search"
 	if exitCode != ExitSuccess {
 		t.Fatalf("sites failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
-	if !strings.Contains(stdout, "alpha") || !strings.Contains(stdout, "Alpha site") || !strings.Contains(stdout, "yes") {
+	if !strings.Contains(stdout, "alpha") || !strings.Contains(stdout, "Sample site A") || !strings.Contains(stdout, "yes") {
 		t.Fatalf("unexpected sites output: %q", stdout)
 	}
 	if !strings.Contains(stdout, "beta") || !strings.Contains(stdout, "no") {
@@ -2175,7 +2209,7 @@ path = "/search"
 			if action.Extracts[0].Name != "group" || action.Extracts[0].Type != "string" || action.Extracts[0].Description != "Filter group" {
 				t.Fatalf("unexpected extract spec for profile action: %#v", action)
 			}
-			if example, ok := action.Extracts[0].Example.(string); !ok || example != "WRM" {
+			if example, ok := action.Extracts[0].Example.(string); !ok || example != "GROUP_A" {
 				t.Fatalf("unexpected extract example for profile action: %#v", action)
 			}
 		}
@@ -2215,10 +2249,10 @@ path = "/search"
 	if !strings.Contains(stdout, "\nExtracts fields:\n") || !strings.Contains(stdout, "name   type    required  default") {
 		t.Fatalf("expected extracts table in action text: %q", stdout)
 	}
-	if !strings.Contains(stdout, `group  string  no        -        Filter group  "WRM"`) {
+	if !strings.Contains(stdout, `group  string  no        -        Filter group  "GROUP_A"`) {
 		t.Fatalf("expected extract row in action text: %q", stdout)
 	}
-	if !strings.Contains(stdout, "\nExamples:\n") || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42`) || !strings.Contains(stdout, `httpx run alpha profile --extract '{"group":"WRM"}'`) {
+	if !strings.Contains(stdout, "\nExamples:\n") || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42`) || !strings.Contains(stdout, `httpx run alpha profile --extract '{"group":"GROUP_A"}'`) {
 		t.Fatalf("expected examples section in action text: %q", stdout)
 	}
 
@@ -2243,14 +2277,14 @@ func TestDiscoveryExposesLoginSummaryAndDynamicPath(t *testing.T) {
 
 	if err := os.WriteFile(filepath.Join(configDir, "alpha.toml"), []byte(strings.TrimSpace(`
 version = 1
-description = "Alpha site"
+description = "Sample site A"
 base_url = "https://alpha.example.com"
 [login]
 path = "/login"
 
 [actions.login_finish]
 description = "Finish login"
-path = { from = "state", key = "login.redirect_url" }
+path = { from = "state", key = "login.next_url" }
 `)+"\n"), 0o600); err != nil {
 		t.Fatalf("write alpha config: %v", err)
 	}
@@ -2278,7 +2312,7 @@ path = { from = "state", key = "login.redirect_url" }
 		t.Fatalf("unmarshal actions output: %v", err)
 	}
 	for _, action := range actionsResp.Actions {
-		if action.Name == "login_finish" && action.Path != `{"from":"state","key":"login.redirect_url"}` {
+		if action.Name == "login_finish" && action.Path != `{"from":"state","key":"login.next_url"}` {
 			t.Fatalf("unexpected dynamic path rendering: %#v", action)
 		}
 	}
