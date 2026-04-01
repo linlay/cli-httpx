@@ -50,7 +50,7 @@ CLI 框架约定：
 - `version`
 - `description`
 - `base_url`
-- `login_action`
+- `login`
 - `timeout`
 - `retries`
 - `headers`
@@ -109,11 +109,13 @@ httpx run <site> <action>
 
 它的语义是：
 
-- 要求 site 配置了 `login_action`
-- 执行 `login_action` 指向的真实 action
+- 要求 site 配置了 `[login]`
+- 只处理简单用户名密码登录
+- 默认从 `<secret-dir>/<site>.json` 读取 `username` / `password`
 - 额外刷新本地 cookie 状态
 - 如果配置了 `save`，把提取出的值写入本地 state
-- 成功执行后写入 `last_login`
+- 登录成功后写入 `last_login`
+- 对于 OIDC/SSO 等复杂流程，应返回配置错误并引导调用方改用外部 Python 脚本
 
 ### `inspect`
 
@@ -138,7 +140,7 @@ httpx inspect <site> <action>
 语义约定：
 
 - `sites`：列出可用 site、描述、action 数和是否有 local state
-- `site <site>`：列出站点描述、`base_url`、`login_action` 和 state 摘要
+- `site <site>`：列出站点描述、`base_url`、内建 login 摘要和 state 摘要
 - `action <site> <action>`：输出以 `httpx run <site> <action>` 为中心的接口说明页，展示 flags、`params` / `extracts` 字段表和示例
 - `actions <site>`：列出每个 action 的名称和描述，作为短列表入口
 - `state <site>`：只显示 state 摘要，不显示 state 里的具体值
@@ -153,7 +155,7 @@ httpx inspect <site> <action>
 
 命令语义：
 
-- `site <site>`：检查站点摘要、`base_url`、`login_action` 和 state 摘要
+- `site <site>`：检查站点摘要、`base_url`、内建 login 摘要和 state 摘要
 - `actions <site>`：检查每个 action 的名称和描述，快速筛选目标 action
 - `action <site> <action>`：检查 action 的完整输入契约、可用 flags 和调用示例
 - `state <site>`：只检查本地 state 摘要，不暴露敏感值
@@ -161,8 +163,9 @@ httpx inspect <site> <action>
 - `run <site> <action>`：用于真实请求验证，可能依赖登录态或站点自身匿名访问策略
 - `run <site> <action> --extract '{...}'`：在不改配置的前提下给 extractor 传入运行时过滤条件
 - `login <site>`：
-  - 若配置了 `login_action`，应执行登录动作并刷新 state
-  - 若未配置 `login_action`，应返回配置错误
+  - 若配置了 `[login]`，应执行简单用户名密码登录并刷新 state
+  - 若未配置 `[login]`，应返回配置错误
+  - 若实际登录流程是 OIDC/SSO，应由外部 Python 脚本处理
 
 维护约定：
 
@@ -215,15 +218,19 @@ httpx inspect <site> <action>
 默认目录规则：
 
 - 如果设置了 `XDG_STATE_HOME`，目录为 `$XDG_STATE_HOME/httpx`
-- 否则目录为 `~/.local/httpx-state`
+- 否则目录为 `~/.local/state/httpx`
+- secret 默认目录为 `$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
+- config 默认目录为 `$XDG_CONFIG_HOME/httpx` 或 `~/.config/httpx`
 - 也可以用 `--state <path>` 覆盖默认目录
+- 也可以用 `--secret <path>` 覆盖默认目录
 
 运行约定：
 
 - 不建议把 `--state` 指到 `/tmp/...`，因为这类目录常常跟着沙箱或容器生命周期一起销毁
-- 推荐优先使用用户级持久目录：`~/.local/httpx-state`
-- 如果需要显式路径，推荐 `--state "$HOME/.local/httpx-state"`
-- `from = "file"` 读取的是任意文件路径；静态 secret 文件推荐放在 `~/.local/share/httpx/secrets/`
+- 推荐优先使用用户级持久目录：`~/.local/state/httpx`
+- 如果需要显式路径，推荐 `--state "$HOME/.local/state/httpx"`
+- 内建登录 secret 文件推荐放在 `~/.local/secret/httpx/<site>.json`
+- `from = "file"` 读取的是任意文件路径；额外静态 secret 也推荐放在 `~/.local/secret/httpx/`
 - 不建议把 mutable runtime state 和静态 secret 文件混放
 - 在容器里能否持久化，关键取决于 `HOME` 或 `--state` 是否绑定到宿主机目录或持久卷，而不是路径名本身
 

@@ -1,7 +1,6 @@
 version = 1
 description = "Example API for local experiments"
 base_url = "https://api.example.com"
-login_action = "login"
 timeout = "10s"
 retries = 1
 
@@ -9,11 +8,9 @@ retries = 1
 Accept = "application/json"
 User-Agent = "httpx/1.0"
 
-[actions.login]
-description = "Create a session and save the bearer token"
-method = "POST"
+[login]
 path = "/session"
-form = { username = { from = "env", key = "DEMO_USER" }, password = { from = "env", key = "DEMO_PASS" } }
+body_format = "form"
 save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 
 [actions.me]
@@ -26,7 +23,7 @@ extract_expr = ".body | {id, name, email}"
 [actions.search]
 description = "Search public resources"
 path = "/search"
-query = { q = { from = "param", key = "q" }, limit = { from = "param", key = "limit", default = 10 }, api_key = { from = "file", path = "~/.local/share/httpx/secrets/demo-api-key", trim = true } }
+query = { q = { from = "param", key = "q" }, limit = { from = "param", key = "limit", default = 10 }, api_key = { from = "file", path = "~/.local/secret/httpx/demo-api-key", trim = true } }
 params = [
   { name = "q", type = "string", required = true, description = "Search keyword", example = "httpx" },
   { name = "limit", type = "number", description = "Result limit", example = 10 }
@@ -37,7 +34,7 @@ extract_expr = ".body.items | map({id, name})"
 [actions.summary]
 description = "Build a filtered summary from the search result"
 path = "/search"
-query = { q = { from = "param", key = "q" }, api_key = { from = "file", path = "~/.local/share/httpx/secrets/demo-api-key", trim = true } }
+query = { q = { from = "param", key = "q" }, api_key = { from = "file", path = "~/.local/secret/httpx/demo-api-key", trim = true } }
 params = [
   { name = "q", type = "string", required = true, description = "Search keyword", example = "httpx" }
 ]

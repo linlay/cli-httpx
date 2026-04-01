@@ -19,6 +19,17 @@ func defaultConfigDir() string {
 	return filepath.Join(home, ".config", "httpx")
 }
 
+func defaultSecretDir() string {
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+		return filepath.Join(dir, "secret", "httpx")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".local", "secret", "httpx")
+	}
+	return filepath.Join(home, ".local", "secret", "httpx")
+}
+
 func resolveConfigPath(configDir, site string) (string, error) {
 	if site == "" {
 		return "", fmt.Errorf("%w: site is required", ErrConfig)
@@ -69,7 +80,7 @@ func defaultStateDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".httpx-state"
+		return filepath.Join(".local", "state", "httpx")
 	}
-	return filepath.Join(home, ".local", "httpx-state")
+	return filepath.Join(home, ".local", "state", "httpx")
 }

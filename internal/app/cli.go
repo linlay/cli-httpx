@@ -111,6 +111,7 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner
 	options := &cliOptions{
 		global: globalOptions{
 			ConfigDir: defaultConfigDir(),
+			SecretDir: defaultSecretDir(),
 			StateDir:  defaultStateDir(),
 		},
 	}
@@ -138,6 +139,7 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner
 
 	flags := root.PersistentFlags()
 	flags.StringVar(&options.global.ConfigDir, "config", options.global.ConfigDir, "Configuration directory")
+	flags.StringVar(&options.global.SecretDir, "secret", options.global.SecretDir, "Secret directory")
 	flags.StringVar(&options.global.StateDir, "state", options.global.StateDir, "State directory")
 	flags.DurationVar(&options.global.Timeout, "timeout", 0, "Request timeout override")
 	flags.BoolVar(&options.global.Reveal, "reveal", false, "Reveal sensitive values in inspect output")

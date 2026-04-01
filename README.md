@@ -45,13 +45,10 @@ httpx login <site>
 version = 1
 description = "示例 API 站点"
 base_url = "https://api.example.com"
-login_action = "login"
 
-[actions.login]
-description = "创建会话"
-method = "POST"
+[login]
 path = "/session"
-form = { username = { from = "env", key = "DEMO_USER" }, password = { from = "env", key = "DEMO_PASS" } }
+body_format = "form"
 save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 
 [actions.profile]
@@ -63,17 +60,28 @@ extract_type = "jq"
 extract_expr = ".body | {id, name, email}"
 ```
 
+内建 `login` 只支持简单用户名密码登录；默认从 `~/.local/secret/httpx/<site>.json` 读取：
+
+```json
+{
+  "username": "alice",
+  "password": "secret"
+}
+```
+
+如果站点是 OIDC/SSO 或其他多步浏览器式登录，推荐用外部 Python 脚本完成登录，再让 `httpx` 复用其产物或继续执行普通 action。
+
 使用步骤：
 
 1. 写一个 `<site>.toml`
-2. 设置环境变量
+2. 写一个 `~/.local/secret/httpx/<site>.json`
 3. 执行 `httpx --config . login <site>`
 4. 执行 `httpx --config . run <site> <action>`
 5. 执行 `httpx --config . sites`、`httpx --config . actions <site>`、`httpx --config . action <site> <action>` 做渐进披露
 
 仓库内的通用示例配置见 [examples/config.toml](./examples/config.toml)。
 
-如果你用 `from = "file"` 读取静态 secret，推荐放在 `~/.local/share/httpx/secrets/`；`httpx` 只负责按路径读取文件，本身不保留 `.secrets` 之类的专用目录。
+如果你用 `from = "file"` 读取其他静态 secret，推荐放在 `~/.local/secret/httpx/`；内建登录也默认使用这套目录约定。
 
 实际站点的 site 配置更适合放在用户本地配置目录：
 
@@ -115,7 +123,8 @@ CLI 现在使用 Cobra 风格的根命令和子命令组织；帮助信息统一
 常用全局参数：
 
 - `--config <dir>`：配置目录，读取 `<dir>/<site>.toml`
-- `--state <path>`：覆盖默认状态目录
+- `--secret <dir>`：secret 目录，读取 `<dir>/<site>.json`
+- `--state <dir>`：覆盖默认状态目录
 - `--format text|json`：输出格式
 - `--param key=value`：传入运行时参数，可重复
 - `--extract <json-object>`：传入 extractor 运行时输入
@@ -203,8 +212,9 @@ httpx login <site>
 
 测试约定：
 
-- `login <site>` 只适用于配置了 `login_action` 的 site
-- 如果 site 没有 `login_action`，`login <site>` 预期失败，这是正常行为
+- `login <site>` 只适用于配置了 `[login]` 的 site
+- 内建 `login` 只处理简单用户名密码登录
+- 如果 site 没有 `[login]`，或实际是 OIDC/SSO 等复杂流程，应该改用外部 Python 脚本
 - `inspect <site> <action>` 不真正发请求，适合作为无副作用查看 action 编译结果
 - `run <site> <action>` 是否成功，通常依赖目标站点是否允许匿名访问，以及本地是否已有有效 state/cookie
 
@@ -218,21 +228,26 @@ httpx run <site> <action>
 
 如果 site 支持登录，建议先执行 `httpx login <site>`，或者先确认 `httpx state <site>` 已存在有效状态。
 
-## State 目录约定
+## Config / Secret / State 目录约定
 
-`httpx` 的 state 用来保存登录 cookie、`save` 提取出的 token 和最近一次登录时间。它是本地运行时状态，不建议放到 `/tmp` 这类沙箱或容器退出后即丢失的目录。
+`httpx` 的 config、secret、state 是三套不同语义的目录，不建议混放。
 
 推荐约定：
 
-- 如果设置了 `XDG_STATE_HOME`，state 会落到 `$XDG_STATE_HOME/httpx`
-- 未设置时，默认目录是 `~/.local/httpx-state`
-- 如果要显式指定路径，统一使用 `--state "$HOME/.local/httpx-state"`
-- 静态 secret 文件建议放在 `~/.local/share/httpx/secrets/`；不要把 runtime state 和静态 secret 文件混放
+- config：
+  - 默认目录：`$XDG_CONFIG_HOME/httpx` 或 `~/.config/httpx`
+  - 文件名：`<site>.toml`
+- secret：
+  - 默认目录：`$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
+  - 文件名：`<site>.json`
+- state：
+  - 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
+  - 文件名：`<site>.json`
 
 容器或沙箱里要特别注意：
 
 - 能否持久化，关键不在目录名，而在于这个目录是否挂载到宿主机或持久卷
-- 如果 `HOME` 本身是持久挂载，未设置 `XDG_STATE_HOME` 时直接用默认目录 `~/.local/httpx-state` 即可
+- 如果 `HOME` 本身是持久挂载，未设置 XDG 变量时直接用默认目录即可
 - 如果 `HOME` 不是持久挂载，即使写到 `~/.local/...`，容器销毁后也一样会丢
 
 推荐调用方式：
@@ -247,9 +262,9 @@ httpx run <site> <action>
 或者：
 
 ```bash
-./httpx --state "$HOME/.local/httpx-state" --format json login <site>
-./httpx --state "$HOME/.local/httpx-state" --format json run <site> <action>
-./httpx --state "$HOME/.local/httpx-state" state <site>
+./httpx --secret "$HOME/.local/secret/httpx" --state "$HOME/.local/state/httpx" --format json login <site>
+./httpx --secret "$HOME/.local/secret/httpx" --state "$HOME/.local/state/httpx" --format json run <site> <action>
+./httpx --state "$HOME/.local/state/httpx" state <site>
 ```
 
 部署时建议由启动脚本或运维预创建 state 目录并设置为 `0700`。state 文件本身由 `httpx` 写为 `0600`。
@@ -367,7 +382,7 @@ curl -I https://cligrep.com/cli-releases/httpx/latest/httpx_linux_amd64.tar.gz
 
 默认保存在本地 state 文件里，不保存在配置文件里：
 
-- 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/httpx-state`
+- 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
 - 文件名：`<site>.json`
 - `values`：保存 `save = { ... }` 提取出来的字符串值，例如 access token
 - `cookies`：保存登录态 cookie
@@ -377,8 +392,8 @@ curl -I https://cligrep.com/cli-releases/httpx/latest/httpx_linux_amd64.tar.gz
 
 - 不建议把 `--state` 指到 `/tmp/...`
 - 容器内如需跨重启保留登录态，应把 `HOME` 或显式 state 目录挂载到持久卷
-- 可接受的显式目录示例：`~/.local/httpx-state`
-- 静态 secret 文件建议放到 `~/.local/share/httpx/secrets/`
+- 可接受的显式目录示例：`~/.local/state/httpx`
+- 内建登录 secret 文件建议放到 `~/.local/secret/httpx/<site>.json`
 - 不要把 `state` 目录放进静态 secret 目录里
 
 state 文件是本地明文 JSON。更完整的状态模型、写回时机和安全约束见 [CLAUDE.md](./CLAUDE.md)。

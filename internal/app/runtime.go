@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,7 +94,11 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
 	}
 
-	compiled, jar, state, err := rt.compile(req, cfg, state)
+	if req.Command == commandLogin {
+		return rt.runLoginCommand(req, cfg, state)
+	}
+
+	compiled, jar, state, err := rt.compileAction(req, cfg, state, req.Action)
 	if err != nil {
 		exitCode, code := classifyError(err)
 		return rt.writeFailure(req, nil, nil, nil, exitCode, code, err.Error())
@@ -107,7 +112,7 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 		return ExitSuccess
 	}
 
-	outcome := rt.execute(req, compiled, jar, state)
+	outcome := rt.execute(req, compiled, jar, state, true, false)
 	if req.Options.Format == formatText {
 		if outcome.ExitCode == ExitSuccess {
 			content := outcome.RawBody
@@ -136,14 +141,13 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 }
 
 func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileState) (*compiledRequest, *persistentJar, *profileState, error) {
-	actionName := req.Action
 	if req.Command == commandLogin {
-		if strings.TrimSpace(cfg.LoginAction) == "" {
-			return nil, nil, nil, fmt.Errorf("%w: site %q does not define login_action", ErrConfig, req.Site)
-		}
-		actionName = cfg.LoginAction
+		return rt.compileLogin(req, cfg, state)
 	}
+	return rt.compileAction(req, cfg, state, req.Action)
+}
 
+func (rt *Runtime) compileAction(req commandRequest, cfg *configFile, state *profileState, actionName string) (*compiledRequest, *persistentJar, *profileState, error) {
 	act, err := selectAction(cfg, req.Site, actionName)
 	if err != nil {
 		return nil, nil, nil, err
@@ -213,24 +217,43 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%w: parse base_url: %v", ErrConfig, err)
 	}
-	pathURL, err := url.Parse(merged.Path)
+	pathValue, err := res.resolveAny(ctx, merged.Path)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("%w: parse action path: %v", ErrConfig, err)
+		return nil, nil, nil, err
 	}
-	finalURL := baseURL.ResolveReference(pathURL)
-	query := finalURL.Query()
-	for key, raw := range merged.Query {
-		resolved, err := res.resolveAny(ctx, raw)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		value, err := stringifyScalar(resolved)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		query.Set(key, value)
+	resolvedPath, err := stringifyScalar(pathValue)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	finalURL.RawQuery = query.Encode()
+	resolvedPath = strings.TrimSpace(resolvedPath)
+	if resolvedPath == "" {
+		return nil, nil, nil, fmt.Errorf("%w: action path resolved to empty string", ErrExecution)
+	}
+	finalURL := baseURL
+	if !(req.Command == commandInspect && !req.Options.Reveal && resolvedPath == redactedValue) {
+		pathURL, err := url.Parse(resolvedPath)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("%w: parse action path: %v", ErrConfig, err)
+		}
+		finalURL = baseURL.ResolveReference(pathURL)
+	}
+	finalURLString := redactedValue
+	if resolvedPath != redactedValue {
+		query := finalURL.Query()
+		for key, raw := range merged.Query {
+			resolved, err := res.resolveAny(ctx, raw)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			value, err := stringifyScalar(resolved)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			query.Set(key, value)
+		}
+		finalURL.RawQuery = query.Encode()
+		finalURLString = finalURL.String()
+	}
 
 	var bodyValue any
 	var bodyBytes []byte
@@ -283,7 +306,7 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 		Action:            actionName,
 		Description:       merged.Description,
 		Method:            merged.Method,
-		URL:               finalURL.String(),
+		URL:               finalURLString,
 		Proxy:             compiledProxy,
 		Headers:           headers,
 		Cookies:           cookies,
@@ -302,7 +325,188 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 	}, jar, state, nil
 }
 
-func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *persistentJar, state *profileState) requestOutcome {
+func (rt *Runtime) compileLogin(req commandRequest, cfg *configFile, state *profileState) (*compiledRequest, *persistentJar, *profileState, error) {
+	merged, err := mergeLogin(cfg, req.Options.Timeout)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	secret, err := loadSecret(req.Options.SecretDir, req.Site)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	res := resolver{
+		state:  state,
+		reveal: true,
+		params: req.Options.Params,
+	}
+	ctx := context.Background()
+
+	headers := map[string]string{}
+	for key, raw := range cfg.Headers {
+		resolved, err := res.resolveAny(ctx, raw)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		value, err := stringifyScalar(resolved)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		headers[key] = value
+	}
+	for key, raw := range merged.Headers {
+		resolved, err := res.resolveAny(ctx, raw)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		value, err := stringifyScalar(resolved)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		headers[key] = value
+	}
+	if merged.BasicAuth {
+		token := base64.StdEncoding.EncodeToString([]byte(secret.Username + ":" + secret.Password))
+		headers["Authorization"] = "Basic " + token
+	}
+
+	proxyValue := ""
+	if cfg.Proxy != nil {
+		resolved, err := res.resolveAny(ctx, cfg.Proxy)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		value, err := stringifyScalar(resolved)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		value = strings.TrimSpace(value)
+		if value != "" {
+			if _, err := parseProxyURL(value); err != nil {
+				return nil, nil, nil, fmt.Errorf("%w: proxy: %v", ErrConfig, err)
+			}
+		}
+		proxyValue = value
+	}
+
+	baseURL, err := url.Parse(cfg.BaseURL)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: parse base_url: %v", ErrConfig, err)
+	}
+	pathURL, err := url.Parse(strings.TrimSpace(merged.Path))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: parse login path: %v", ErrConfig, err)
+	}
+	finalURL := baseURL.ResolveReference(pathURL)
+
+	bodyPayload := map[string]any{
+		merged.UsernameKey: secret.Username,
+		merged.PasswordKey: secret.Password,
+	}
+	var bodyValue any
+	var bodyBytes []byte
+	contentType := ""
+	switch merged.BodyFormat {
+	case "json":
+		bodyValue = bodyPayload
+		bodyBytes, contentType, err = bodyToBytes(bodyPayload)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	case "form":
+		form := url.Values{}
+		form.Set(merged.UsernameKey, secret.Username)
+		form.Set(merged.PasswordKey, secret.Password)
+		bodyValue = map[string]string{
+			merged.UsernameKey: secret.Username,
+			merged.PasswordKey: secret.Password,
+		}
+		bodyBytes = []byte(form.Encode())
+		contentType = "application/x-www-form-urlencoded"
+	default:
+		return nil, nil, nil, fmt.Errorf("%w: unsupported login body format %q", ErrConfig, merged.BodyFormat)
+	}
+	if _, ok := headers["Content-Type"]; !ok && contentType != "" {
+		headers["Content-Type"] = contentType
+	}
+
+	jar := newPersistentJar(state.Cookies)
+	compiledExtractor, err := compileExtractor("login", merged.Extractor, nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return &compiledRequest{
+		Site:              req.Site,
+		Action:            string(commandLogin),
+		Description:       "Built-in basic login",
+		Method:            merged.Method,
+		URL:               finalURL.String(),
+		Proxy:             proxyValue,
+		Headers:           headers,
+		Body:              bodyValue,
+		TimeoutMS:         merged.Timeout.Milliseconds(),
+		Retries:           merged.Retries,
+		ExpectStatus:      merged.ExpectStatus,
+		Extractor:         cloneExtractorSpec(merged.Extractor),
+		ExtractInput:      map[string]any{},
+		Params:            nil,
+		Extracts:          nil,
+		Save:              merged.Save,
+		BodyBytes:         bodyBytes,
+		ContentType:       contentType,
+		compiledExtractor: compiledExtractor,
+	}, jar, state, nil
+}
+
+func (rt *Runtime) runLoginCommand(req commandRequest, cfg *configFile, state *profileState) int {
+	compiled, jar, nextState, err := rt.compileLogin(req, cfg, state)
+	if err != nil {
+		exitCode, code := classifyError(err)
+		return rt.writeFailure(req, nil, nil, nil, exitCode, code, err.Error())
+	}
+	outcome := rt.execute(req, compiled, jar, nextState, false, false)
+	if outcome.ExitCode != ExitSuccess {
+		if req.Options.Format == formatText && outcome.Envelope.Error != nil {
+			fmt.Fprintf(rt.stderr, "error: %s\n", outcome.Envelope.Error.Message)
+			return outcome.ExitCode
+		}
+		if req.Options.Format == formatJSON {
+			if err := writeJSON(rt.stdout, outcome.Envelope); err != nil {
+				fmt.Fprintf(rt.stderr, "error: %v\n", err)
+				return ExitExecution
+			}
+		}
+		return outcome.ExitCode
+	}
+
+	nextState.LastLogin = time.Now().UTC().Format(time.RFC3339)
+	if err := saveState(req.Options.StateDir, req.Site, nextState); err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "execution_error", fmt.Errorf("%w: persist state: %v", ErrExecution, err).Error())
+	}
+
+	if req.Options.Format == formatText {
+		content := outcome.RawBody
+		if compiled.compiledExtractor != nil {
+			content, err = renderExtractOutput(outcome.Envelope.Body)
+			if err != nil {
+				fmt.Fprintf(rt.stderr, "error: %v\n", err)
+				return ExitExecution
+			}
+		}
+		if _, err := rt.stdout.Write(content); err != nil {
+			fmt.Fprintf(rt.stderr, "error: %v\n", err)
+			return ExitExecution
+		}
+		return outcome.ExitCode
+	}
+	if err := writeJSON(rt.stdout, outcome.Envelope); err != nil {
+		fmt.Fprintf(rt.stderr, "error: %v\n", err)
+		return ExitExecution
+	}
+	return outcome.ExitCode
+}
+
+func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *persistentJar, state *profileState, persistStateFile bool, markLoginTime bool) requestOutcome {
 	client, err := newHTTPClient(compiled, jar)
 	if err != nil {
 		exitCode, code := classifyError(err)
@@ -324,9 +528,44 @@ func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *p
 	for attempt := 0; attempt <= compiled.Retries; attempt++ {
 		outcome, retry, err := rt.performOnce(client, req, compiled, jar, state)
 		if err == nil {
+			if persistStateFile {
+				if markLoginTime {
+					state.LastLogin = time.Now().UTC().Format(time.RFC3339)
+				}
+				if persistErr := saveState(req.Options.StateDir, req.Site, state); persistErr != nil {
+					return requestOutcome{
+						Envelope: envelope{
+							OK:     false,
+							Site:   req.Site,
+							Action: compiled.Action,
+							Error: &errorEnvelope{
+								Code:    "execution_error",
+								Message: fmt.Errorf("%w: persist state: %v", ErrExecution, persistErr).Error(),
+							},
+						},
+						ExitCode: ExitExecution,
+					}
+				}
+			}
 			return outcome
 		}
 		if !retry && outcome.ExitCode != 0 {
+			if persistStateFile {
+				if persistErr := saveState(req.Options.StateDir, req.Site, state); persistErr != nil {
+					return requestOutcome{
+						Envelope: envelope{
+							OK:     false,
+							Site:   req.Site,
+							Action: compiled.Action,
+							Error: &errorEnvelope{
+								Code:    "execution_error",
+								Message: fmt.Errorf("%w: persist state: %v", ErrExecution, persistErr).Error(),
+							},
+						},
+						ExitCode: ExitExecution,
+					}
+				}
+			}
 			return outcome
 		}
 		lastErr = err
@@ -475,12 +714,6 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 	sort.Strings(updatedKeys)
 
 	state.Cookies = jar.Snapshot()
-	if req.Command == commandLogin {
-		state.LastLogin = time.Now().UTC().Format(time.RFC3339)
-	}
-	if err := saveState(req.Options.StateDir, req.Site, state); err != nil {
-		return requestOutcome{}, false, fmt.Errorf("%w: persist state: %v", ErrExecution, err)
-	}
 
 	ok := matchesExpectedStatus(response.StatusCode, compiled.ExpectStatus)
 	bodyValue := decodedBody

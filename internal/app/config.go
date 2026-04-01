@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -28,7 +29,7 @@ func (d *durationValue) UnmarshalText(text []byte) error {
 type configFile struct {
 	Description string            `toml:"description"`
 	BaseURL     string            `toml:"base_url"`
-	LoginAction string            `toml:"login_action"`
+	Login       *loginConfig      `toml:"login"`
 	Proxy       any               `toml:"proxy"`
 	Timeout     durationValue     `toml:"timeout"`
 	Retries     int               `toml:"retries"`
@@ -39,10 +40,27 @@ type configFile struct {
 	Version     int               `toml:"version"`
 }
 
+type loginConfig struct {
+	Method         string            `toml:"method"`
+	Path           string            `toml:"path"`
+	BodyFormat     string            `toml:"body_format"`
+	UsernameField  string            `toml:"username_field"`
+	PasswordField  string            `toml:"password_field"`
+	BasicAuth      bool              `toml:"basic_auth"`
+	Headers        map[string]any    `toml:"headers"`
+	ExpectStatus   any               `toml:"expect_status"`
+	ExtractType    string            `toml:"extract_type"`
+	ExtractExpr    string            `toml:"extract_expr"`
+	ExtractPattern string            `toml:"extract_pattern"`
+	ExtractGroup   *int              `toml:"extract_group"`
+	ExtractAll     *bool             `toml:"extract_all"`
+	Save           map[string]string `toml:"save"`
+}
+
 type action struct {
 	Description    string            `toml:"description"`
 	Method         string            `toml:"method"`
-	Path           string            `toml:"path"`
+	Path           any               `toml:"path"`
 	Proxy          any               `toml:"proxy"`
 	Timeout        *durationValue    `toml:"timeout"`
 	Retries        *int              `toml:"retries"`
@@ -66,7 +84,7 @@ type mergedAction struct {
 	Name         string
 	Description  string
 	Method       string
-	Path         string
+	Path         any
 	Proxy        any
 	Timeout      time.Duration
 	Retries      int
@@ -79,6 +97,21 @@ type mergedAction struct {
 	Extractor    *extractorSpec
 	Params       []actionInputSpec
 	Extracts     []actionInputSpec
+	Save         map[string]string
+}
+
+type mergedLogin struct {
+	Method       string
+	Path         string
+	BodyFormat   string
+	UsernameKey  string
+	PasswordKey  string
+	BasicAuth    bool
+	Headers      map[string]any
+	Timeout      time.Duration
+	Retries      int
+	ExpectStatus []int
+	Extractor    *extractorSpec
 	Save         map[string]string
 }
 
@@ -119,15 +152,15 @@ func validateConfig(cfg *configFile) error {
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		return fmt.Errorf("%w: base_url is required", ErrConfig)
 	}
-	if len(cfg.Actions) == 0 {
-		return fmt.Errorf("%w: actions is required", ErrConfig)
+	if len(cfg.Actions) == 0 && cfg.Login == nil {
+		return fmt.Errorf("%w: actions or login is required", ErrConfig)
 	}
 	for actionName, act := range cfg.Actions {
 		if strings.TrimSpace(act.Description) == "" {
 			return fmt.Errorf("%w: actions.%s.description is required", ErrConfig, actionName)
 		}
-		if strings.TrimSpace(act.Path) == "" {
-			return fmt.Errorf("%w: actions.%s.path is required", ErrConfig, actionName)
+		if err := validateActionPath("actions."+actionName+".path", act.Path); err != nil {
+			return err
 		}
 		if act.Body != nil && len(act.Form) > 0 {
 			return fmt.Errorf("%w: actions.%s cannot set both body and form", ErrConfig, actionName)
@@ -149,9 +182,9 @@ func validateConfig(cfg *configFile) error {
 			return err
 		}
 	}
-	if cfg.LoginAction != "" {
-		if _, ok := cfg.Actions[cfg.LoginAction]; !ok {
-			return fmt.Errorf("%w: login_action references missing action %q", ErrConfig, cfg.LoginAction)
+	if cfg.Login != nil {
+		if err := validateLoginConfig(cfg.Login); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -212,7 +245,7 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 		Name:         actionName,
 		Description:  act.Description,
 		Method:       method,
-		Path:         act.Path,
+		Path:         cloneJSONValue(act.Path),
 		Proxy:        proxy,
 		Timeout:      timeout,
 		Retries:      retries,
@@ -227,6 +260,145 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 		Extracts:     cloneActionInputSpecs(act.Extracts),
 		Save:         copyStringMap(act.Save),
 	}, nil
+}
+
+func validateLoginConfig(login *loginConfig) error {
+	if login == nil {
+		return nil
+	}
+	if strings.TrimSpace(login.Path) == "" {
+		return fmt.Errorf("%w: login.path is required", ErrConfig)
+	}
+	if _, err := normalizeExpectStatus(login.ExpectStatus); err != nil {
+		return fmt.Errorf("%w: login.expect_status: %v", ErrConfig, err)
+	}
+	extractor, err := extractorFromLogin(login)
+	if err != nil {
+		return err
+	}
+	if _, err := compileExtractor("login", extractor, nil); err != nil {
+		return err
+	}
+	if _, err := normalizeLoginBodyFormat(login.BodyFormat); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mergeLogin(cfg *configFile, timeoutOverride time.Duration) (mergedLogin, error) {
+	if cfg.Login == nil {
+		return mergedLogin{}, fmt.Errorf("%w: site does not define built-in basic login; use an external Python script for OIDC/SSO and other non-basic flows", ErrConfig)
+	}
+
+	expectStatus, err := normalizeExpectStatus(cfg.Login.ExpectStatus)
+	if err != nil {
+		return mergedLogin{}, fmt.Errorf("%w: %v", ErrConfig, err)
+	}
+	if len(expectStatus) == 0 {
+		expectStatus = []int{http.StatusOK}
+	}
+
+	timeout := cfg.Timeout.Duration
+	if timeout == 0 {
+		timeout = defaultRequestTimeout
+	}
+	if timeoutOverride > 0 {
+		timeout = timeoutOverride
+	}
+
+	retries := cfg.Retries
+	if retries < 0 {
+		return mergedLogin{}, fmt.Errorf("%w: retries cannot be negative", ErrConfig)
+	}
+
+	extractor, err := extractorFromLogin(cfg.Login)
+	if err != nil {
+		return mergedLogin{}, err
+	}
+	bodyFormat, err := normalizeLoginBodyFormat(cfg.Login.BodyFormat)
+	if err != nil {
+		return mergedLogin{}, err
+	}
+
+	method := strings.ToUpper(strings.TrimSpace(cfg.Login.Method))
+	if method == "" {
+		method = "POST"
+	}
+
+	usernameKey := strings.TrimSpace(cfg.Login.UsernameField)
+	if usernameKey == "" {
+		usernameKey = "username"
+	}
+	passwordKey := strings.TrimSpace(cfg.Login.PasswordField)
+	if passwordKey == "" {
+		passwordKey = "password"
+	}
+
+	headers := map[string]any{}
+	for key, value := range cfg.Login.Headers {
+		headers[key] = cloneJSONValue(value)
+	}
+
+	return mergedLogin{
+		Method:       method,
+		Path:         cfg.Login.Path,
+		BodyFormat:   bodyFormat,
+		UsernameKey:  usernameKey,
+		PasswordKey:  passwordKey,
+		BasicAuth:    cfg.Login.BasicAuth,
+		Headers:      headers,
+		Timeout:      timeout,
+		Retries:      retries,
+		ExpectStatus: expectStatus,
+		Extractor:    extractor,
+		Save:         cloneStringMap(cfg.Login.Save),
+	}, nil
+}
+
+func normalizeLoginBodyFormat(value string) (string, error) {
+	format := strings.ToLower(strings.TrimSpace(value))
+	if format == "" {
+		return "form", nil
+	}
+	switch format {
+	case "form", "json":
+		return format, nil
+	default:
+		return "", fmt.Errorf("%w: login.body_format must be form or json", ErrConfig)
+	}
+}
+
+func validateActionPath(prefix string, raw any) error {
+	switch path := raw.(type) {
+	case string:
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("%w: %s is required", ErrConfig, prefix)
+		}
+		return nil
+	case map[string]any:
+		if _, ok, err := parseSourceSpec(path); err != nil {
+			return err
+		} else if !ok {
+			return fmt.Errorf("%w: %s must be a string or dynamic source", ErrConfig, prefix)
+		}
+		return nil
+	default:
+		if raw == nil {
+			return fmt.Errorf("%w: %s is required", ErrConfig, prefix)
+		}
+		return fmt.Errorf("%w: %s must be a string or dynamic source", ErrConfig, prefix)
+	}
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
 }
 
 func validateActionInputSpecs(prefix string, specs []actionInputSpec) error {

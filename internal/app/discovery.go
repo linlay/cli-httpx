@@ -21,13 +21,20 @@ type sitesResponse struct {
 	Sites []siteListItem `json:"sites"`
 }
 
+type loginSummary struct {
+	Enabled    bool   `json:"enabled"`
+	Type       string `json:"type,omitempty"`
+	Path       string `json:"path,omitempty"`
+	SecretPath string `json:"secret_path,omitempty"`
+}
+
 type siteSummary struct {
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	BaseURL     string       `json:"base_url"`
-	LoginAction string       `json:"login_action,omitempty"`
-	Actions     int          `json:"actions"`
-	State       stateSummary `json:"state"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	BaseURL     string        `json:"base_url"`
+	Login       *loginSummary `json:"login,omitempty"`
+	Actions     int           `json:"actions"`
+	State       stateSummary  `json:"state"`
 }
 
 type siteResponse struct {
@@ -130,7 +137,7 @@ func (rt *Runtime) runShowSite(req commandRequest) int {
 		Name:        req.Site,
 		Description: cfg.Description,
 		BaseURL:     cfg.BaseURL,
-		LoginAction: cfg.LoginAction,
+		Login:       summarizeLogin(cfg, req.Options.SecretDir, req.Site),
 		Actions:     len(cfg.Actions),
 		State:       state,
 	}
@@ -172,7 +179,7 @@ func (rt *Runtime) runListActions(req commandRequest) int {
 			Name:        name,
 			Description: merged.Description,
 			Method:      merged.Method,
-			Path:        merged.Path,
+			Path:        describeActionPath(merged.Path),
 			Params:      cloneActionInputSpecs(merged.Params),
 			Extracts:    cloneActionInputSpecs(merged.Extracts),
 		})
@@ -218,7 +225,7 @@ func (rt *Runtime) runShowAction(req commandRequest) int {
 		Name:         req.Action,
 		Description:  merged.Description,
 		Method:       merged.Method,
-		Path:         merged.Path,
+		Path:         describeActionPath(merged.Path),
 		ExpectStatus: append([]int(nil), merged.ExpectStatus...),
 		Extractor:    cloneExtractorSpec(merged.Extractor),
 		Params:       cloneActionInputSpecs(merged.Params),
@@ -316,12 +323,22 @@ func writeSitesText(w io.Writer, items []siteListItem) error {
 }
 
 func writeSiteText(w io.Writer, summary siteSummary) error {
+	loginMode := "none"
+	loginPath := "-"
+	loginSecretPath := "-"
+	if summary.Login != nil && summary.Login.Enabled {
+		loginMode = summary.Login.Type
+		loginPath = summary.Login.Path
+		loginSecretPath = summary.Login.SecretPath
+	}
 	_, err := fmt.Fprintf(w,
-		"site: %s\ndescription: %s\nbase_url: %s\nlogin_action: %s\nactions: %d\nstate_exists: %t\nstate_path: %s\nlast_login: %s\nsaved_values: %d\ncookies: %d\n",
+		"site: %s\ndescription: %s\nbase_url: %s\nlogin: %s\nlogin_path: %s\nlogin_secret_path: %s\nactions: %d\nstate_exists: %t\nstate_path: %s\nlast_login: %s\nsaved_values: %d\ncookies: %d\n",
 		summary.Name,
 		summary.Description,
 		summary.BaseURL,
-		summary.LoginAction,
+		loginMode,
+		loginPath,
+		loginSecretPath,
 		summary.Actions,
 		summary.State.Exists,
 		summary.State.Path,
@@ -591,4 +608,29 @@ func emptyText(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func describeActionPath(path any) string {
+	switch value := path.(type) {
+	case string:
+		return value
+	default:
+		rendered, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprintf("%v", value)
+		}
+		return string(rendered)
+	}
+}
+
+func summarizeLogin(cfg *configFile, secretDir, site string) *loginSummary {
+	if cfg.Login == nil {
+		return nil
+	}
+	return &loginSummary{
+		Enabled:    true,
+		Type:       "basic",
+		Path:       cfg.Login.Path,
+		SecretPath: secretPath(secretDir, site),
+	}
 }

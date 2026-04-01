@@ -130,6 +130,26 @@ extracts = [
 	}
 }
 
+func TestLoadConfigRejectsLegacyLoginActionFields(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+login_action = "login"
+
+[actions.login]
+description = "Login"
+path = "/login"
+`)
+
+	_, err := loadConfig(configPath)
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
+	}
+}
+
 func TestLoadConfigRejectsFlatExtractFieldsWithoutType(t *testing.T) {
 	t.Parallel()
 
@@ -467,7 +487,7 @@ func TestDefaultStateDirUsesLocalHTTPXStateWithoutXDG(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
 
 	got := defaultStateDir()
-	want := filepath.Join(homeDir, ".local", "httpx-state")
+	want := filepath.Join(homeDir, ".local", "state", "httpx")
 	if got != want {
 		t.Fatalf("defaultStateDir mismatch: got %q want %q", got, want)
 	}
@@ -484,6 +504,29 @@ func TestDefaultStateDirUsesXDGStateHomeWhenSet(t *testing.T) {
 	}
 }
 
+func TestDefaultSecretDirUsesLocalSecretPathWithoutXDGData(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	got := defaultSecretDir()
+	want := filepath.Join(homeDir, ".local", "secret", "httpx")
+	if got != want {
+		t.Fatalf("defaultSecretDir mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestDefaultSecretDirUsesXDGDataHomeWhenSet(t *testing.T) {
+	xdgDataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+
+	got := defaultSecretDir()
+	want := filepath.Join(xdgDataHome, "secret", "httpx")
+	if got != want {
+		t.Fatalf("defaultSecretDir mismatch: got %q want %q", got, want)
+	}
+}
+
 func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	t.Parallel()
 
@@ -495,6 +538,7 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 		"--extract", `{"days":7}`,
 		"list",
 		"--timeout=5s",
+		"--secret", "/tmp/httpx-secret",
 		"--state", "/tmp/httpx-state",
 		"--config", "/tmp/httpx-config",
 	})
@@ -509,6 +553,9 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	}
 	if req.Options.Timeout != 5*time.Second {
 		t.Fatalf("expected timeout 5s, got %v", req.Options.Timeout)
+	}
+	if req.Options.SecretDir != "/tmp/httpx-secret" {
+		t.Fatalf("unexpected secret dir: %q", req.Options.SecretDir)
 	}
 	if req.Options.StateDir != "/tmp/httpx-state" {
 		t.Fatalf("unexpected state dir: %q", req.Options.StateDir)
@@ -608,8 +655,17 @@ func TestDefaultStateDirUsesHomeLocalHTTPXState(t *testing.T) {
 	t.Setenv("HOME", "/root")
 	t.Setenv("XDG_STATE_HOME", "")
 
-	if got := defaultStateDir(); got != "/root/.local/httpx-state" {
+	if got := defaultStateDir(); got != "/root/.local/state/httpx" {
 		t.Fatalf("unexpected default state dir: %q", got)
+	}
+}
+
+func TestDefaultSecretDirUsesHomeLocalSecretHTTPXPath(t *testing.T) {
+	t.Setenv("HOME", "/root")
+	t.Setenv("XDG_DATA_HOME", "")
+
+	if got := defaultSecretDir(); got != "/root/.local/secret/httpx" {
+		t.Fatalf("unexpected default secret dir: %q", got)
 	}
 }
 
@@ -1030,9 +1086,6 @@ extract_group = 2
 }
 
 func TestLoginPersistsStateAndRunReusesCookieAndToken(t *testing.T) {
-	t.Setenv("HTTPX_USER", "alice")
-	t.Setenv("HTTPX_PASS", "secret")
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/login":
@@ -1064,17 +1117,13 @@ func TestLoginPersistsStateAndRunReusesCookieAndToken(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
+	secretDir := writeSecret(t, "demo", "alice", "secret")
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
 description = "Demo site"
 base_url = %q
-login_action = "login_request"
-
-[actions.login_request]
-description = "Sign in"
-method = "POST"
+[login]
 path = "/login"
-form = { username = { from = "env", key = "HTTPX_USER" }, password = { from = "env", key = "HTTPX_PASS" } }
 save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 
 [actions.data]
@@ -1086,7 +1135,7 @@ extract_expr = ".body.value"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "login", "demo"})
+	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed: exit=%d stderr=%s stdout=%s", exitCode, loginStderr, loginStdout)
 	}
@@ -1105,7 +1154,7 @@ extract_expr = ".body.value"
 		t.Fatalf("expected last_login to be set")
 	}
 
-	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "run", "demo", "data"})
+	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "run", "demo", "data"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, runStderr, runStdout)
 	}
@@ -1136,6 +1185,110 @@ extract_expr = ".body.value"
 	}
 }
 
+func TestLoginSupportsJSONBodyAndBasicAuth(t *testing.T) {
+	var gotAuth string
+	var gotBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"token-456"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	secretDir := writeSecret(t, "demo", "alice", "secret")
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[login]
+path = "/login"
+body_format = "json"
+basic_auth = true
+save = { "auth.authorization" = "\"Bearer \" + .body.token" }
+`, server.URL))
+
+	stateDir := t.TempDir()
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "login", "demo"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("login failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	if gotAuth != "Basic YWxpY2U6c2VjcmV0" {
+		t.Fatalf("unexpected auth header: %q", gotAuth)
+	}
+	if gotBody["username"] != "alice" || gotBody["password"] != "secret" {
+		t.Fatalf("unexpected login body: %#v", gotBody)
+	}
+
+	state, err := loadState(stateDir, "demo")
+	if err != nil {
+		t.Fatalf("loadState failed: %v", err)
+	}
+	if state.Values["auth.authorization"] != "Bearer token-456" {
+		t.Fatalf("unexpected saved state: %#v", state.Values)
+	}
+}
+
+func TestLoginFailsClearlyWithoutBuiltInLoginConfig(t *testing.T) {
+	configDir := writeProfileConfig(t, "demo", `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.data]
+description = "Load data"
+path = "/data"
+`)
+	secretDir := writeSecret(t, "demo", "alice", "secret")
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--format", "json", "login", "demo"})
+	if exitCode != ExitConfig {
+		t.Fatalf("expected config failure, got exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if !strings.Contains(stdout, "external Python script") {
+		t.Fatalf("expected guidance for external Python script, stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestLoginDoesNotPersistStateOnFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+
+	secretDir := writeSecret(t, "demo", "alice", "secret")
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+[login]
+path = "/login"
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "login", "demo"})
+	if exitCode == ExitSuccess {
+		t.Fatalf("expected login failure, got stdout=%s", stdout)
+	}
+	if !strings.Contains(stderr, "unexpected status 403") && !strings.Contains(stdout, "unexpected status 403") {
+		t.Fatalf("expected status failure, stderr=%q stdout=%q", stderr, stdout)
+	}
+
+	summary, err := summarizeState(stateDir, "demo")
+	if err != nil {
+		t.Fatalf("summarizeState failed: %v", err)
+	}
+	if summary.Exists {
+		t.Fatalf("expected no persisted state, got %#v", summary)
+	}
+}
+
 func TestRunSupportsExplicitCookiesFromState(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1156,15 +1309,12 @@ func TestRunSupportsExplicitCookiesFromState(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
+	secretDir := writeSecret(t, "demo", "alice", "secret")
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
 description = "Demo site"
 base_url = %q
-login_action = "login_request"
-
-[actions.login_request]
-description = "Sign in"
-method = "POST"
+[login]
 path = "/login"
 save = { "oem.sessionid" = ".body.session_id" }
 
@@ -1177,12 +1327,12 @@ extract_expr = ".body.ok"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	_, _, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "login", "demo"})
+	_, _, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed with exit=%d", exitCode)
 	}
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "run", "demo", "me"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "run", "demo", "me"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1246,6 +1396,40 @@ body = { nested = { from = "env", key = "HTTPX_SECRET" } }
 	body, ok := compiled.Body.(map[string]any)
 	if !ok || body["nested"] != redactedValue {
 		t.Fatalf("expected redacted body, got %#v", compiled.Body)
+	}
+}
+
+func TestInspectRedactsDynamicPath(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := saveState(stateDir, "demo", &profileState{
+		Values: map[string]string{
+			"login.redirect_url": "https://sso.example.com/finish?ticket=abc",
+		},
+	}); err != nil {
+		t.Fatalf("saveState failed: %v", err)
+	}
+
+	configDir := writeProfileConfig(t, "demo", `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.finish]
+description = "Finish login"
+path = { from = "state", key = "login.redirect_url" }
+`)
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "inspect", "demo", "finish"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	var compiled compiledRequest
+	if err := json.Unmarshal([]byte(stdout), &compiled); err != nil {
+		t.Fatalf("unmarshal inspect output: %v", err)
+	}
+	if compiled.URL != redactedValue {
+		t.Fatalf("expected redacted URL, got %#v", compiled.URL)
 	}
 }
 
@@ -1883,11 +2067,7 @@ func TestDiscoveryCommandsExposeUsableActionMetadata(t *testing.T) {
 version = 1
 description = "Alpha site"
 base_url = "https://alpha.example.com"
-login_action = "signin"
-
-[actions.signin]
-description = "Sign in"
-method = "POST"
+[login]
 path = "/login"
 
 [actions.profile]
@@ -1941,8 +2121,8 @@ path = "/search"
 	if siteResp.Site.Name != "alpha" || siteResp.Site.State.SavedValues != 1 || !siteResp.Site.State.Exists {
 		t.Fatalf("unexpected site response: %#v", siteResp)
 	}
-	if siteResp.Site.LoginAction != "signin" {
-		t.Fatalf("unexpected login_action in site response: %#v", siteResp)
+	if siteResp.Site.Login == nil || !siteResp.Site.Login.Enabled || siteResp.Site.Login.Type != "basic" || siteResp.Site.Login.Path != "/login" {
+		t.Fatalf("unexpected login summary in site response: %#v", siteResp)
 	}
 
 	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--state", stateDir, "actions", "alpha"})
@@ -1955,10 +2135,10 @@ path = "/search"
 	if !strings.Contains(stdout, "ACTION") || !strings.Contains(stdout, "DESCRIPTION") {
 		t.Fatalf("expected actions table header: %q", stdout)
 	}
-	if !strings.Contains(stdout, "signin") || !strings.Contains(stdout, "profile") {
+	if !strings.Contains(stdout, "profile") {
 		t.Fatalf("unexpected actions output: %q", stdout)
 	}
-	if !strings.Contains(stdout, "Sign in") || !strings.Contains(stdout, "Load profile") {
+	if !strings.Contains(stdout, "Load profile") {
 		t.Fatalf("expected action descriptions in actions output: %q", stdout)
 	}
 	if strings.Contains(stdout, "action:") || strings.Contains(stdout, "description:") || strings.Contains(stdout, "method:") || strings.Contains(stdout, "path:") || strings.Contains(stdout, "params:") || strings.Contains(stdout, "extracts:") {
@@ -1973,7 +2153,7 @@ path = "/search"
 	if err := json.Unmarshal([]byte(stdout), &actionsResp); err != nil {
 		t.Fatalf("unmarshal actions output: %v", err)
 	}
-	if len(actionsResp.Actions) != 2 {
+	if len(actionsResp.Actions) != 1 {
 		t.Fatalf("unexpected actions response: %#v", actionsResp)
 	}
 	foundProfile := false
@@ -1997,14 +2177,6 @@ path = "/search"
 			}
 			if example, ok := action.Extracts[0].Example.(string); !ok || example != "WRM" {
 				t.Fatalf("unexpected extract example for profile action: %#v", action)
-			}
-		}
-		if action.Name == "signin" {
-			if action.Method != "POST" || action.Path != "/login" {
-				t.Fatalf("expected method/path details for signin action: %#v", action)
-			}
-			if len(action.Params) != 0 || len(action.Extracts) != 0 {
-				t.Fatalf("expected empty params/extracts for signin action: %#v", action)
 			}
 		}
 	}
@@ -2063,6 +2235,52 @@ path = "/search"
 	}
 	if !stateResp.State.Exists || stateResp.State.Cookies != 1 || stateResp.State.SavedValues != 1 {
 		t.Fatalf("unexpected state response: %#v", stateResp)
+	}
+}
+
+func TestDiscoveryExposesLoginSummaryAndDynamicPath(t *testing.T) {
+	configDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(configDir, "alpha.toml"), []byte(strings.TrimSpace(`
+version = 1
+description = "Alpha site"
+base_url = "https://alpha.example.com"
+[login]
+path = "/login"
+
+[actions.login_finish]
+description = "Finish login"
+path = { from = "state", key = "login.redirect_url" }
+`)+"\n"), 0o600); err != nil {
+		t.Fatalf("write alpha config: %v", err)
+	}
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--format", "json", "site", "alpha"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("site failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	var siteResp siteResponse
+	if err := json.Unmarshal([]byte(stdout), &siteResp); err != nil {
+		t.Fatalf("unmarshal site output: %v", err)
+	}
+	if siteResp.Site.Login == nil || !siteResp.Site.Login.Enabled || siteResp.Site.Login.Path != "/login" {
+		t.Fatalf("unexpected login summary: %#v", siteResp.Site)
+	}
+
+	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "--format", "json", "actions", "alpha"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("actions failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	var actionsResp actionsResponse
+	if err := json.Unmarshal([]byte(stdout), &actionsResp); err != nil {
+		t.Fatalf("unmarshal actions output: %v", err)
+	}
+	for _, action := range actionsResp.Actions {
+		if action.Name == "login_finish" && action.Path != `{"from":"state","key":"login.redirect_url"}` {
+			t.Fatalf("unexpected dynamic path rendering: %#v", action)
+		}
 	}
 }
 
@@ -2178,6 +2396,18 @@ func writeProfileConfig(t *testing.T, profile, content string) string {
 	path := filepath.Join(dir, profile+".toml")
 	if err := os.WriteFile(path, []byte(strings.TrimSpace(content)+"\n"), 0o600); err != nil {
 		t.Fatalf("write site config: %v", err)
+	}
+	return dir
+}
+
+func writeSecret(t *testing.T, site, username, password string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	content := fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
+	path := filepath.Join(dir, site+".json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
 	}
 	return dir
 }

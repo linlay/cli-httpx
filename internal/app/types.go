@@ -25,6 +25,7 @@ const (
 type globalOptions struct {
 	ConfigDir    string
 	Format       outputFormat
+	SecretDir    string
 	Timeout      time.Duration
 	StateDir     string
 	Inspect      bool

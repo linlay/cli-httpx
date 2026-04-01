@@ -103,6 +103,47 @@ func extractorFromAction(actionName string, act action) (*extractorSpec, error) 
 	return normalizeExtractor(actionName, spec)
 }
 
+func extractorFromLogin(login *loginConfig) (*extractorSpec, error) {
+	if login == nil {
+		return nil, nil
+	}
+
+	extractType := strings.ToLower(strings.TrimSpace(login.ExtractType))
+	extractExpr := strings.TrimSpace(login.ExtractExpr)
+	extractPattern := strings.TrimSpace(login.ExtractPattern)
+	hasGroup := login.ExtractGroup != nil
+	hasAll := login.ExtractAll != nil
+
+	if extractType == "" {
+		switch {
+		case extractExpr != "":
+			return nil, fmt.Errorf("%w: login.extract_type is required when extract_expr is set", ErrConfig)
+		case extractPattern != "":
+			return nil, fmt.Errorf("%w: login.extract_type is required when extract_pattern is set", ErrConfig)
+		case hasGroup:
+			return nil, fmt.Errorf("%w: login.extract_type is required when extract_group is set", ErrConfig)
+		case hasAll:
+			return nil, fmt.Errorf("%w: login.extract_type is required when extract_all is set", ErrConfig)
+		default:
+			return nil, nil
+		}
+	}
+
+	spec := &extractorSpec{
+		Type:    extractType,
+		Expr:    extractExpr,
+		Pattern: extractPattern,
+	}
+	if hasGroup {
+		spec.Group = *login.ExtractGroup
+	}
+	if hasAll {
+		spec.All = *login.ExtractAll
+	}
+
+	return normalizeExtractor("login", spec)
+}
+
 func compileExtractor(actionName string, spec *extractorSpec, _ map[string]any) (*compiledExtractor, error) {
 	if spec == nil {
 		return nil, nil
