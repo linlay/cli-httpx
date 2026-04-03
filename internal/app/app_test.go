@@ -39,6 +39,9 @@ bogus = true
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("expected ErrConfig, got %v", err)
 	}
+	if !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("expected config path in error, got %v", err)
+	}
 }
 
 func TestLoadConfigRejectsLegacyProfilesWrapper(t *testing.T) {
@@ -104,6 +107,34 @@ expr = ".body"
 	_, err := loadConfig(configPath)
 	if err == nil || !errors.Is(err, ErrConfig) {
 		t.Fatalf("expected config error, got %v", err)
+	}
+}
+
+func TestLoadConfigIncludesPathInDecodeErrors(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.bad]
+description = { text = "wrong type" }
+path = "/"
+`)
+
+	_, err := loadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected ErrConfig, got %v", err)
+	}
+	if !strings.Contains(err.Error(), configPath) {
+		t.Fatalf("expected config path in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "decode config") {
+		t.Fatalf("expected decode config context, got %v", err)
 	}
 }
 

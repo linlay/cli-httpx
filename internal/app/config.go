@@ -127,17 +127,17 @@ type actionInputSpec struct {
 func loadConfig(path string) (*configFile, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read config: %v", ErrConfig, err)
+		return nil, fmt.Errorf("%w: read config %q: %v", ErrConfig, path, err)
 	}
 
 	var cfg configFile
 	dec := toml.NewDecoder(bytes.NewReader(content))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("%w: decode config: %v", ErrConfig, err)
+		return nil, fmt.Errorf("%w: decode config %q: %v", ErrConfig, path, err)
 	}
 	if err := validateConfig(&cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: validate config %q: %v", ErrConfig, path, err)
 	}
 	return &cfg, nil
 }
