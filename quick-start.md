@@ -13,7 +13,7 @@ which httpx
 
 ```sh
 # 3. 准备 secret JSON
-cat > /Users/joe/gtja/linlay/cli-httpx/jira.gtjaqh.net.json <<'JSON'
+cat > /Users/joe/xxx/linlay/cli-httpx/jira.xxxqh.net.json <<'JSON'
 {
   "cookie": "JSESSIONID=xxx; atlassian.xsrf.token=yyy"
 }
@@ -23,11 +23,11 @@ JSON
 ```toml
 # 4. 配置 TOML
 # 文件路径：
-# /Users/joe/gtja/linlay/zenmind-env/skills-market/jira/httpx/jira.gtjaqh.net.toml
+# /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx/jira.xxxqh.net.toml
 
 version = 1
 description = "Jira"
-base_url = "https://jira.gtjaqh.net"
+base_url = "https://jira.xxxqh.net"
 timeout = "20s"
 retries = 1
 
@@ -50,44 +50,44 @@ params = [
 
 ```sh
 # 5. 加载 secret 和 config 到当前 shell
-eval $(httpx load jira.gtjaqh.net \
-  --secret /Users/joe/gtja/linlay/cli-httpx/jira.gtjaqh.net.json \
-  --config /Users/joe/gtja/linlay/zenmind-env/skills-market/jira/httpx)
+eval $(httpx load jira.xxxqh.net \
+  --secret /Users/joe/xxx/linlay/cli-httpx/jira.xxxqh.net.json \
+  --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx)
 ```
 
 ```sh
 # 6. 验证环境变量
-env | grep jira_gtjaqh_net
+env | grep jira_xxxqh_net
 ```
 
 ```sh
 # 7. 手动导出 cookie 到环境变量 前缀是site名拼接 site_cookie
-export jira_gtjaqh_net_cookie='JSESSIONID=xxx; atlassian.xsrf.token=yyy'
+export jira_xxxqh_net_cookie='JSESSIONID=xxx; atlassian.xsrf.token=yyy'
 ```
 
 ```sh
 # 8. 手动导出 config 到环境变量 前缀是site名拼接 site_config
-export jira_gtjaqh_net_config='/Users/joe/gtja/linlay/zenmind-env/skills-market/jira/httpx'
+export jira_xxxqh_net_config='/Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx'
 ```
 
 ```sh
 # 9. 预览请求，不发送
-httpx inspect jira.gtjaqh.net get_worklogs --reveal \
+httpx inspect jira.xxxqh.net get_worklogs --reveal \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
   --param max_results=1
 ```
 
 ```sh
 # 10. 真正发送请求
-httpx run jira.gtjaqh.net get_worklogs \
+httpx run jira.xxxqh.net get_worklogs \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
   --param max_results=1
 ```
 
 ```sh
 # 11. 不使用 load 的历史写法
-httpx --config /Users/joe/gtja/linlay/zenmind-env/skills-market/jira/httpx \
-  run jira.gtjaqh.net get_worklogs \
+httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
+  run jira.xxxqh.net get_worklogs \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
   --param max_results=1
 ```
@@ -99,10 +99,10 @@ httpx sites
 
 ```sh
 # 13. 查看站点 actions
-httpx actions jira.gtjaqh.net
+httpx actions jira.xxxqh.net
 ```
 
 ```sh
 # 14. 查看 action 参数
-httpx action jira.gtjaqh.net get_worklogs
+httpx action jira.xxxqh.net get_worklogs
 ```

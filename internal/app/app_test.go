@@ -1093,14 +1093,14 @@ func TestResolverReportsMissingEnvAndShellTimeout(t *testing.T) {
 }
 
 func TestResolverPrefersSiteScopedEnvWithUnderscoreKey(t *testing.T) {
-	siteEnv := secretEnvKey("jira.gtjaqh.net", "cookie")
+	siteEnv := secretEnvKey("jira.xxqh.net", "cookie")
 	t.Setenv(siteEnv, "site-cookie")
 	t.Setenv("cookie", "plain-cookie")
 
 	r := resolver{
 		state:  &profileState{Values: map[string]string{}},
 		reveal: true,
-		site:   "jira.gtjaqh.net",
+		site:   "jira.xxqh.net",
 	}
 	value, err := r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "cookie"})
 	if err != nil {
@@ -1117,7 +1117,7 @@ func TestResolverFallsBackToPlainEnvAndHintsLoad(t *testing.T) {
 	r := resolver{
 		state:  &profileState{Values: map[string]string{}},
 		reveal: true,
-		site:   "jira.gtjaqh.net",
+		site:   "jira.xxqh.net",
 	}
 	value, err := r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "fallback_cookie"})
 	if err != nil {
@@ -1132,9 +1132,9 @@ func TestResolverFallsBackToPlainEnvAndHintsLoad(t *testing.T) {
 		t.Fatalf("expected missing env execution error, got %v", err)
 	}
 	for _, want := range []string{
-		`env var "jira_gtjaqh_net_missing_cookie" not set`,
-		`tried "jira_gtjaqh_net_missing_cookie", "missing_cookie"`,
-		`hint: run 'eval $(httpx load jira.gtjaqh.net)'`,
+		`env var "jira_xxqh_net_missing_cookie" not set`,
+		`tried "jira_xxqh_net_missing_cookie", "missing_cookie"`,
+		`hint: run 'eval $(httpx load jira.xxqh.net)'`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected error to contain %q, got %v", want, err)
@@ -1144,7 +1144,7 @@ func TestResolverFallsBackToPlainEnvAndHintsLoad(t *testing.T) {
 
 func TestRunLoadExportsShellSafeSiteScopedEnv(t *testing.T) {
 	secretDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(secretDir, "jira.gtjaqh.net.json"), []byte(`{
+	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{
 		"cookie": "abc'123",
 		"auth.session": "session-value"
 	}`), 0o600); err != nil {
@@ -1152,15 +1152,15 @@ func TestRunLoadExportsShellSafeSiteScopedEnv(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runLoad(&stdout, "jira.gtjaqh.net", globalOptions{SecretDir: secretDir})
+	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{SecretDir: secretDir})
 	if err != nil {
 		t.Fatalf("runLoad failed: %v", err)
 	}
 	output := stdout.String()
 	for _, want := range []string{
-		"export jira_gtjaqh_net_cookie='abc'\\''123'\n",
-		"export jira_gtjaqh_net_auth_session='session-value'\n",
-		"export jira_gtjaqh_net_config='",
+		"export jira_xxqh_net_cookie='abc'\\''123'\n",
+		"export jira_xxqh_net_auth_session='session-value'\n",
+		"export jira_xxqh_net_config='",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
@@ -1169,7 +1169,7 @@ func TestRunLoadExportsShellSafeSiteScopedEnv(t *testing.T) {
 }
 
 func TestLoadCommandAcceptsSecretFileFlag(t *testing.T) {
-	secretFile := filepath.Join(t.TempDir(), "jira.gtjaqh.net.json")
+	secretFile := filepath.Join(t.TempDir(), "jira.xxqh.net.json")
 	if err := os.WriteFile(secretFile, []byte(`{"cookie":"from-file"}`), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
@@ -1180,14 +1180,14 @@ func TestLoadCommandAcceptsSecretFileFlag(t *testing.T) {
 		t.Fatal("load should execute directly")
 		return ExitConfig
 	})
-	root.SetArgs([]string{"load", "jira.gtjaqh.net", "--secret", secretFile, "--config", configDir})
+	root.SetArgs([]string{"load", "jira.xxqh.net", "--secret", secretFile, "--config", configDir})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute load failed: %v", err)
 	}
 	output := stdout.String()
 	for _, want := range []string{
-		"export jira_gtjaqh_net_cookie='from-file'\n",
-		"export jira_gtjaqh_net_config='" + filepath.Join(configDir, "jira.gtjaqh.net.toml") + "'\n",
+		"export jira_xxqh_net_cookie='from-file'\n",
+		"export jira_xxqh_net_config='" + filepath.Join(configDir, "jira.xxqh.net.toml") + "'\n",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
@@ -1196,13 +1196,13 @@ func TestLoadCommandAcceptsSecretFileFlag(t *testing.T) {
 }
 
 func TestResolveConfigPathUsesLoadedSiteConfigEnv(t *testing.T) {
-	configFile := filepath.Join(t.TempDir(), "jira.gtjaqh.net.toml")
+	configFile := filepath.Join(t.TempDir(), "jira.xxqh.net.toml")
 	if err := os.WriteFile(configFile, []byte("version = 1\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	t.Setenv(siteConfigEnvKey("jira.gtjaqh.net"), configFile)
+	t.Setenv(siteConfigEnvKey("jira.xxqh.net"), configFile)
 
-	path, err := resolveConfigPath(defaultConfigDir(), "jira.gtjaqh.net")
+	path, err := resolveConfigPath(defaultConfigDir(), "jira.xxqh.net")
 	if err != nil {
 		t.Fatalf("resolve config path failed: %v", err)
 	}
@@ -1214,13 +1214,13 @@ func TestResolveConfigPathUsesLoadedSiteConfigEnv(t *testing.T) {
 func TestResolveConfigPathIgnoresLoadedSiteConfigWhenExplicitConfigIsSet(t *testing.T) {
 	loadedDir := t.TempDir()
 	explicitDir := t.TempDir()
-	t.Setenv(siteConfigEnvKey("jira.gtjaqh.net"), loadedDir)
+	t.Setenv(siteConfigEnvKey("jira.xxqh.net"), loadedDir)
 
-	path, err := resolveConfigPath(explicitDir, "jira.gtjaqh.net")
+	path, err := resolveConfigPath(explicitDir, "jira.xxqh.net")
 	if err != nil {
 		t.Fatalf("resolve config path failed: %v", err)
 	}
-	want := filepath.Join(explicitDir, "jira.gtjaqh.net.toml")
+	want := filepath.Join(explicitDir, "jira.xxqh.net.toml")
 	if path != want {
 		t.Fatalf("expected explicit config path %q, got %q", want, path)
 	}
