@@ -61,6 +61,14 @@ env | grep jira_xxxqh_net
 ```
 
 ```sh
+# 6.1 如果 TOML 在子目录，例如 httpx/a/b/jira.xxxqh.net.toml
+# load 会额外导出：
+# jira_xxxqh_net_config=/Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx/a/b/jira.xxxqh.net.toml
+# jira_xxxqh_net_a_b_config=/Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx/a/b/jira.xxxqh.net.toml
+# 如果根目录和子目录都有 jira.xxxqh.net.toml，根目录导出到 jira_xxxqh_net_config，子目录导出到 jira_xxxqh_net_a_b_config
+```
+
+```sh
 # 7. 手动导出 cookie 到环境变量 前缀是site名拼接 site_cookie
 export jira_xxxqh_net_cookie='JSESSIONID=xxx; atlassian.xsrf.token=yyy'
 ```

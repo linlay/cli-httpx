@@ -1196,6 +1196,82 @@ func TestLoadCommandReadsDefaultSecretPath(t *testing.T) {
 	}
 }
 
+func TestRunLoadExportsNestedConfigDirectoryAlias(t *testing.T) {
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{"cookie":"value"}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	configRoot := t.TempDir()
+	nestedDir := filepath.Join(configRoot, "a", "b")
+	if err := os.MkdirAll(nestedDir, 0o700); err != nil {
+		t.Fatalf("mkdir nested config dir: %v", err)
+	}
+	configPath := filepath.Join(nestedDir, "jira.xxqh.net.toml")
+	if err := os.WriteFile(configPath, []byte("version = 1\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{
+		SecretDir: secretDir,
+		ConfigDir: configRoot,
+	})
+	if err != nil {
+		t.Fatalf("runLoad failed: %v", err)
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"export jira_xxqh_net_config='" + configPath + "'\n",
+		"export jira_xxqh_net_a_b_config='" + configPath + "'\n",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, output)
+		}
+	}
+}
+
+func TestRunLoadExportsRootConfigAndNestedConfigAliases(t *testing.T) {
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{"cookie":"value"}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	configRoot := t.TempDir()
+	rootConfig := filepath.Join(configRoot, "jira.xxqh.net.toml")
+	if err := os.WriteFile(rootConfig, []byte("version = 1\n"), 0o600); err != nil {
+		t.Fatalf("write root config: %v", err)
+	}
+	for _, rel := range []string{"groupA", filepath.Join("a", "b")} {
+		dir := filepath.Join(configRoot, rel)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir config dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "jira.xxqh.net.toml"), []byte("version = 1\n"), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+
+	var stdout bytes.Buffer
+	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{
+		SecretDir: secretDir,
+		ConfigDir: configRoot,
+	})
+	if err != nil {
+		t.Fatalf("runLoad failed: %v", err)
+	}
+	output := stdout.String()
+	groupAConfig := filepath.Join(configRoot, "groupA", "jira.xxqh.net.toml")
+	nestedConfig := filepath.Join(configRoot, "a", "b", "jira.xxqh.net.toml")
+	for _, want := range []string{
+		"export jira_xxqh_net_config='" + rootConfig + "'\n",
+		"export jira_xxqh_net_groupA_config='" + groupAConfig + "'\n",
+		"export jira_xxqh_net_a_b_config='" + nestedConfig + "'\n",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, output)
+		}
+	}
+}
+
 func TestRunLoadReportsMissingDefaultSecretPathClearly(t *testing.T) {
 	dataHome := t.TempDir()
 	secretDir := filepath.Join(dataHome, "secret", "httpx")
