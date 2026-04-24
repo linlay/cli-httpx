@@ -1092,6 +1092,101 @@ func TestResolverReportsMissingEnvAndShellTimeout(t *testing.T) {
 	}
 }
 
+func TestResolverPrefersSiteScopedEnvWithUnderscoreKey(t *testing.T) {
+	siteEnv := secretEnvKey("jira.gtjaqh.net", "cookie")
+	t.Setenv(siteEnv, "site-cookie")
+	t.Setenv("cookie", "plain-cookie")
+
+	r := resolver{
+		state:  &profileState{Values: map[string]string{}},
+		reveal: true,
+		site:   "jira.gtjaqh.net",
+	}
+	value, err := r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "cookie"})
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if value != "site-cookie" {
+		t.Fatalf("expected site-scoped env value, got %#v", value)
+	}
+}
+
+func TestResolverFallsBackToPlainEnvAndHintsLoad(t *testing.T) {
+	t.Setenv("fallback_cookie", "plain-cookie")
+
+	r := resolver{
+		state:  &profileState{Values: map[string]string{}},
+		reveal: true,
+		site:   "jira.gtjaqh.net",
+	}
+	value, err := r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "fallback_cookie"})
+	if err != nil {
+		t.Fatalf("resolve fallback failed: %v", err)
+	}
+	if value != "plain-cookie" {
+		t.Fatalf("expected plain env fallback, got %#v", value)
+	}
+
+	_, err = r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "missing_cookie"})
+	if err == nil || !errors.Is(err, ErrExecution) {
+		t.Fatalf("expected missing env execution error, got %v", err)
+	}
+	for _, want := range []string{
+		`env var "jira_gtjaqh_net_missing_cookie" not set`,
+		`tried "jira_gtjaqh_net_missing_cookie", "missing_cookie"`,
+		`hint: run 'eval $(httpx load jira.gtjaqh.net)'`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+}
+
+func TestRunLoadExportsShellSafeSiteScopedEnv(t *testing.T) {
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "jira.gtjaqh.net.json"), []byte(`{
+		"cookie": "abc'123",
+		"auth.session": "session-value"
+	}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err := runLoad(&stdout, "jira.gtjaqh.net", globalOptions{SecretDir: secretDir})
+	if err != nil {
+		t.Fatalf("runLoad failed: %v", err)
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"export jira_gtjaqh_net_cookie='abc'\\''123'\n",
+		"export jira_gtjaqh_net_auth_session='session-value'\n",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, output)
+		}
+	}
+}
+
+func TestLoadCommandAcceptsSecretFileFlag(t *testing.T) {
+	secretFile := filepath.Join(t.TempDir(), "jira.gtjaqh.net.json")
+	if err := os.WriteFile(secretFile, []byte(`{"cookie":"from-file"}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	root := newRootCommand(nil, &stdout, io.Discard, func(commandRequest) int {
+		t.Fatal("load should execute directly")
+		return ExitConfig
+	})
+	root.SetArgs([]string{"load", "jira.gtjaqh.net", "--secret", secretFile})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute load failed: %v", err)
+	}
+	if got, want := stdout.String(), "export jira_gtjaqh_net_cookie='from-file'\n"; got != want {
+		t.Fatalf("unexpected load output: got %q want %q", got, want)
+	}
+}
+
 func TestRunUsesDefaultSiteConfigPath(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("pong"))

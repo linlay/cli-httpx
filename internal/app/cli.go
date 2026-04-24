@@ -158,6 +158,7 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner
 		newActionRequestCommand(commandActions, "actions <site>", "List actions for a site", cobra.ExactArgs(1), options, run),
 		newActionRequestCommand(commandState, "state <site>", "Show stored state summary for a site", cobra.ExactArgs(1), options, run),
 		newVersionCommand(),
+		newLoadCommand(options),
 	)
 
 	return root

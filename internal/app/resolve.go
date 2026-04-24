@@ -19,6 +19,7 @@ type resolver struct {
 	state  *profileState
 	reveal bool
 	params map[string]string
+	site   string
 }
 
 type sourceSpec struct {
@@ -184,11 +185,22 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		}
 		return nil, fmt.Errorf("%w: parameter %q not provided", ErrExecution, spec.Key)
 	case "env":
-		value, ok := os.LookupEnv(spec.Key)
-		if !ok {
-			return nil, fmt.Errorf("%w: environment variable %q not set", ErrExecution, spec.Key)
+		tried := []string{}
+		if r.site != "" {
+			siteKey := secretEnvKey(r.site, spec.Key)
+			tried = append(tried, siteKey)
+			if value, ok := os.LookupEnv(siteKey); ok {
+				return maybeTrim(value, spec.Trim), nil
+			}
 		}
-		return maybeTrim(value, spec.Trim), nil
+		tried = append(tried, spec.Key)
+		if value, ok := os.LookupEnv(spec.Key); ok {
+			return maybeTrim(value, spec.Trim), nil
+		}
+		if r.site != "" {
+			return nil, fmt.Errorf("%w: env var %q not set; tried %q, %q (hint: run 'eval $(httpx load %s)' to load secrets)", ErrExecution, tried[0], tried[0], spec.Key, r.site)
+		}
+		return nil, fmt.Errorf("%w: env var %q not set", ErrExecution, spec.Key)
 	case "file":
 		path, err := expandPath(spec.Path)
 		if err != nil {
