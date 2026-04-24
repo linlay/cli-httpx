@@ -35,11 +35,34 @@ func resolveConfigPath(configDir, site string) (string, error) {
 		return "", fmt.Errorf("%w: site is required", ErrConfig)
 	}
 
+	if configDir == defaultConfigDir() {
+		envKey := siteConfigEnvKey(site)
+		if envPath, ok := os.LookupEnv(envKey); ok && strings.TrimSpace(envPath) != "" {
+			return resolveLoadedConfigPath(envKey, envPath, site)
+		}
+	}
+
 	if info, err := os.Stat(configDir); err == nil && !info.IsDir() {
 		return "", fmt.Errorf("%w: config path %q must be a directory", ErrConfig, configDir)
 	}
 
 	return filepath.Join(configDir, site+".toml"), nil
+}
+
+func resolveLoadedConfigPath(envKey, envPath, site string) (string, error) {
+	if info, err := os.Stat(envPath); err == nil {
+		if info.IsDir() {
+			return filepath.Join(envPath, site+".toml"), nil
+		}
+		return envPath, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("%w: stat config path from %s: %v", ErrConfig, envKey, err)
+	}
+
+	if filepath.Ext(envPath) == ".toml" {
+		return envPath, nil
+	}
+	return filepath.Join(envPath, site+".toml"), nil
 }
 
 func listConfigSites(configDir string) ([]string, error) {

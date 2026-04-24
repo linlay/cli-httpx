@@ -82,6 +82,7 @@ func runLoad(stdout io.Writer, site string, opts globalOptions) error {
 		}
 		fmt.Fprintf(stdout, "export %s=%s\n", envKey, shellQuote(envValue))
 	}
+	fmt.Fprintf(stdout, "export %s=%s\n", siteConfigEnvKey(site), shellQuote(filepath.Join(opts.ConfigDir, site+".toml")))
 
 	return nil
 }
@@ -132,4 +133,8 @@ func shellQuote(s string) string {
 
 func secretEnvKey(site, key string) string {
 	return strings.ReplaceAll(site+"."+key, ".", "_")
+}
+
+func siteConfigEnvKey(site string) string {
+	return secretEnvKey(site, "config")
 }

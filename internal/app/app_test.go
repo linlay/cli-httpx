@@ -1160,6 +1160,7 @@ func TestRunLoadExportsShellSafeSiteScopedEnv(t *testing.T) {
 	for _, want := range []string{
 		"export jira_gtjaqh_net_cookie='abc'\\''123'\n",
 		"export jira_gtjaqh_net_auth_session='session-value'\n",
+		"export jira_gtjaqh_net_config='",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
@@ -1172,18 +1173,56 @@ func TestLoadCommandAcceptsSecretFileFlag(t *testing.T) {
 	if err := os.WriteFile(secretFile, []byte(`{"cookie":"from-file"}`), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
+	configDir := t.TempDir()
 
 	var stdout bytes.Buffer
 	root := newRootCommand(nil, &stdout, io.Discard, func(commandRequest) int {
 		t.Fatal("load should execute directly")
 		return ExitConfig
 	})
-	root.SetArgs([]string{"load", "jira.gtjaqh.net", "--secret", secretFile})
+	root.SetArgs([]string{"load", "jira.gtjaqh.net", "--secret", secretFile, "--config", configDir})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute load failed: %v", err)
 	}
-	if got, want := stdout.String(), "export jira_gtjaqh_net_cookie='from-file'\n"; got != want {
-		t.Fatalf("unexpected load output: got %q want %q", got, want)
+	output := stdout.String()
+	for _, want := range []string{
+		"export jira_gtjaqh_net_cookie='from-file'\n",
+		"export jira_gtjaqh_net_config='" + filepath.Join(configDir, "jira.gtjaqh.net.toml") + "'\n",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, output)
+		}
+	}
+}
+
+func TestResolveConfigPathUsesLoadedSiteConfigEnv(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "jira.gtjaqh.net.toml")
+	if err := os.WriteFile(configFile, []byte("version = 1\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv(siteConfigEnvKey("jira.gtjaqh.net"), configFile)
+
+	path, err := resolveConfigPath(defaultConfigDir(), "jira.gtjaqh.net")
+	if err != nil {
+		t.Fatalf("resolve config path failed: %v", err)
+	}
+	if path != configFile {
+		t.Fatalf("expected loaded config file %q, got %q", configFile, path)
+	}
+}
+
+func TestResolveConfigPathIgnoresLoadedSiteConfigWhenExplicitConfigIsSet(t *testing.T) {
+	loadedDir := t.TempDir()
+	explicitDir := t.TempDir()
+	t.Setenv(siteConfigEnvKey("jira.gtjaqh.net"), loadedDir)
+
+	path, err := resolveConfigPath(explicitDir, "jira.gtjaqh.net")
+	if err != nil {
+		t.Fatalf("resolve config path failed: %v", err)
+	}
+	want := filepath.Join(explicitDir, "jira.gtjaqh.net.toml")
+	if path != want {
+		t.Fatalf("expected explicit config path %q, got %q", want, path)
 	}
 }
 
