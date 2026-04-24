@@ -36,10 +36,11 @@ type globalOptions struct {
 }
 
 type commandRequest struct {
-	Command commandKind
-	Site    string
-	Action  string
-	Options globalOptions
+	Command       commandKind
+	Site          string
+	ConfigProfile string
+	Action        string
+	Options       globalOptions
 }
 
 type envelope struct {

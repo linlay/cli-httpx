@@ -124,7 +124,7 @@ func (rt *Runtime) runListSites(req commandRequest) int {
 }
 
 func (rt *Runtime) runShowSite(req commandRequest) int {
-	cfg, _, err := loadSiteConfig(req.Options.ConfigDir, req.Site)
+	cfg, _, err := loadSiteConfig(req.Options.ConfigDir, req.Site, req.ConfigProfile)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
@@ -157,7 +157,7 @@ func (rt *Runtime) runShowSite(req commandRequest) int {
 }
 
 func (rt *Runtime) runListActions(req commandRequest) int {
-	cfg, _, err := loadSiteConfig(req.Options.ConfigDir, req.Site)
+	cfg, _, err := loadSiteConfig(req.Options.ConfigDir, req.Site, req.ConfigProfile)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
@@ -200,7 +200,7 @@ func (rt *Runtime) runListActions(req commandRequest) int {
 }
 
 func (rt *Runtime) runShowAction(req commandRequest) int {
-	cfg, _, err := loadSiteConfig(req.Options.ConfigDir, req.Site)
+	cfg, _, err := loadSiteConfig(req.Options.ConfigDir, req.Site, req.ConfigProfile)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
@@ -267,8 +267,8 @@ func (rt *Runtime) runShowState(req commandRequest) int {
 	return ExitSuccess
 }
 
-func loadSiteConfig(configDir, site string) (*configFile, string, error) {
-	path, err := resolveConfigPath(configDir, site)
+func loadSiteConfig(configDir, site string, profile ...string) (*configFile, string, error) {
+	path, err := resolveConfigPath(configDir, site, profile...)
 	if err != nil {
 		return nil, "", err
 	}

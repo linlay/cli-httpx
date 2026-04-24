@@ -233,6 +233,12 @@ func buildCommandRequest(kind commandKind, args []string, options *cliOptions) (
 	}
 
 	if req.Site != "" {
+		site, profile, err := splitSiteProfile(req.Site)
+		if err != nil {
+			return commandRequest{}, err
+		}
+		req.Site = site
+		req.ConfigProfile = profile
 		if err := validateSiteName(req.Site); err != nil {
 			return commandRequest{}, err
 		}
@@ -334,6 +340,22 @@ func validateSiteName(site string) error {
 		return fmt.Errorf("%w: site name %q is reserved", ErrConfig, site)
 	}
 	return nil
+}
+
+func splitSiteProfile(raw string) (string, string, error) {
+	site, profile, hasProfile := strings.Cut(raw, "/")
+	if !hasProfile {
+		return raw, "", nil
+	}
+	site = strings.TrimSpace(site)
+	profile = strings.Trim(strings.TrimSpace(profile), "/")
+	if site == "" {
+		return "", "", fmt.Errorf("%w: site is required", ErrConfig)
+	}
+	if profile == "" {
+		return "", "", fmt.Errorf("%w: config profile is required after %q", ErrConfig, raw)
+	}
+	return site, profile, nil
 }
 
 func isReservedWord(value string) bool {

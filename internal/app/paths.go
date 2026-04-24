@@ -30,13 +30,20 @@ func defaultSecretDir() string {
 	return filepath.Join(home, ".local", "secret", "httpx")
 }
 
-func resolveConfigPath(configDir, site string) (string, error) {
+func resolveConfigPath(configDir, site string, profile ...string) (string, error) {
 	if site == "" {
 		return "", fmt.Errorf("%w: site is required", ErrConfig)
+	}
+	configProfile := ""
+	if len(profile) > 0 {
+		configProfile = strings.Trim(strings.TrimSpace(profile[0]), "/")
 	}
 
 	if configDir == defaultConfigDir() {
 		envKey := siteConfigEnvKey(site)
+		if configProfile != "" {
+			envKey = siteConfigDirEnvKey(site, configProfile)
+		}
 		if envPath, ok := os.LookupEnv(envKey); ok && strings.TrimSpace(envPath) != "" {
 			return resolveLoadedConfigPath(envKey, envPath, site)
 		}

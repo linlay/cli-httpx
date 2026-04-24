@@ -81,7 +81,7 @@ func (rt *Runtime) Run(req commandRequest) int {
 }
 
 func (rt *Runtime) runActionCommand(req commandRequest) int {
-	configPath, err := resolveConfigPath(req.Options.ConfigDir, req.Site)
+	configPath, err := resolveConfigPath(req.Options.ConfigDir, req.Site, req.ConfigProfile)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}

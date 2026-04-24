@@ -546,6 +546,21 @@ func TestParseArgsDefaultsByCommand(t *testing.T) {
 	}
 }
 
+func TestParseArgsSupportsSiteConfigProfile(t *testing.T) {
+	t.Parallel()
+
+	req, err := parseArgs([]string{"run", "jira.xxqh.net/groupA", "list"})
+	if err != nil {
+		t.Fatalf("parseArgs failed: %v", err)
+	}
+	if req.Site != "jira.xxqh.net" {
+		t.Fatalf("unexpected site: %q", req.Site)
+	}
+	if req.ConfigProfile != "groupA" {
+		t.Fatalf("unexpected config profile: %q", req.ConfigProfile)
+	}
+}
+
 func TestDefaultStateDirUsesLocalHTTPXStateWithoutXDG(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -1327,6 +1342,22 @@ func TestResolveConfigPathUsesLoadedSiteConfigEnv(t *testing.T) {
 	}
 	if path != configFile {
 		t.Fatalf("expected loaded config file %q, got %q", configFile, path)
+	}
+}
+
+func TestResolveConfigPathUsesLoadedProfileConfigEnv(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "jira.xxqh.net.toml")
+	if err := os.WriteFile(configFile, []byte("version = 1\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv(siteConfigDirEnvKey("jira.xxqh.net", "groupA"), configFile)
+
+	path, err := resolveConfigPath(defaultConfigDir(), "jira.xxqh.net", "groupA")
+	if err != nil {
+		t.Fatalf("resolve config path failed: %v", err)
+	}
+	if path != configFile {
+		t.Fatalf("expected loaded profile config file %q, got %q", configFile, path)
 	}
 }
 

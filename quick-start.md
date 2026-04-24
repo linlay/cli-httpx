@@ -86,8 +86,22 @@ httpx inspect jira.xxxqh.net get_worklogs --reveal \
 ```
 
 ```sh
+# 9.1 使用子目录 groupA 下的 TOML，不需要再写 --config
+httpx inspect jira.xxxqh.net/groupA get_worklogs --reveal \
+  --param path=/rest/api/2/issue/QIUER-5185/worklog \
+  --param max_results=1
+```
+
+```sh
 # 10. 真正发送请求
 httpx run jira.xxxqh.net get_worklogs \
+  --param path=/rest/api/2/issue/QIUER-5185/worklog \
+  --param max_results=1
+```
+
+```sh
+# 10.1 使用子目录 groupA 下的 TOML，不需要再写 --config
+httpx run jira.xxxqh.net/groupA get_worklogs \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
   --param max_results=1
 ```
