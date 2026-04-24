@@ -13,7 +13,8 @@ which httpx
 
 ```sh
 # 3. 准备 secret JSON
-cat > /Users/joe/xxx/linlay/cli-httpx/jira.xxxqh.net.json <<'JSON'
+mkdir -p ~/.local/secret/httpx
+cat > ~/.local/secret/httpx/jira.xxxqh.net.json <<'JSON'
 {
   "cookie": "JSESSIONID=xxx; atlassian.xsrf.token=yyy"
 }
@@ -49,9 +50,8 @@ params = [
 ```
 
 ```sh
-# 5. 加载 secret 和 config 到当前 shell
+# 5. 加载 secret 和 config 到当前 shell secret会从默认路径加载，config从指定目录加载
 eval $(httpx load jira.xxxqh.net \
-  --secret /Users/joe/xxx/linlay/cli-httpx/jira.xxxqh.net.json \
   --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx)
 ```
 
@@ -67,7 +67,7 @@ export jira_xxxqh_net_cookie='JSESSIONID=xxx; atlassian.xsrf.token=yyy'
 
 ```sh
 # 8. 手动导出 config 到环境变量 前缀是site名拼接 site_config
-export jira_xxxqh_net_config='/Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx'
+export jira_xxxqh_net_config='/Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx/jira.xxxqh.net.toml'
 ```
 
 ```sh

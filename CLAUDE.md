@@ -111,7 +111,7 @@ httpx run <site> <action>
 
 - 要求 site 配置了 `[login]`
 - 只处理简单用户名密码登录
-- 默认从 `<secret-dir>/<site>.json` 读取 `username` / `password`
+- 默认从 secret 默认目录的 `<site>.json` 读取 `username` / `password`
 - 额外刷新本地 cookie 状态
 - 如果配置了 `save`，把提取出的值写入本地 state
 - 登录成功后写入 `last_login`
@@ -222,7 +222,6 @@ httpx inspect <site> <action>
 - secret 默认目录为 `$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
 - config 默认目录为 `$XDG_CONFIG_HOME/httpx` 或 `~/.config/httpx`
 - 也可以用 `--state <path>` 覆盖默认目录
-- 也可以用 `--secret <path>` 覆盖默认目录
 
 运行约定：
 

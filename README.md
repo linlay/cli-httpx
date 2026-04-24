@@ -123,7 +123,6 @@ CLI 现在使用 Cobra 风格的根命令和子命令组织；帮助信息统一
 常用全局参数：
 
 - `--config <dir>`：配置目录，读取 `<dir>/<site>.toml`
-- `--secret <dir>`：secret 目录，读取 `<dir>/<site>.json`
 - `--state <dir>`：覆盖默认状态目录
 - `--format text|json`：输出格式
 - `--param key=value`：传入运行时参数，可重复
@@ -262,8 +261,8 @@ httpx run <site> <action>
 或者：
 
 ```bash
-./httpx --secret "$HOME/.local/secret/httpx" --state "$HOME/.local/state/httpx" --format json login <site>
-./httpx --secret "$HOME/.local/secret/httpx" --state "$HOME/.local/state/httpx" --format json run <site> <action>
+./httpx --state "$HOME/.local/state/httpx" --format json login <site>
+./httpx --state "$HOME/.local/state/httpx" --format json run <site> <action>
 ./httpx --state "$HOME/.local/state/httpx" state <site>
 ```
 

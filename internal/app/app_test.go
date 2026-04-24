@@ -603,7 +603,6 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 		"--extract", `{"days":7}`,
 		"list",
 		"--timeout=5s",
-		"--secret", "/tmp/httpx-secret",
 		"--state", "/tmp/httpx-state",
 		"--config", "/tmp/httpx-config",
 	})
@@ -618,9 +617,6 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	}
 	if req.Options.Timeout != 5*time.Second {
 		t.Fatalf("expected timeout 5s, got %v", req.Options.Timeout)
-	}
-	if req.Options.SecretDir != "/tmp/httpx-secret" {
-		t.Fatalf("unexpected secret dir: %q", req.Options.SecretDir)
 	}
 	if req.Options.StateDir != "/tmp/httpx-state" {
 		t.Fatalf("unexpected state dir: %q", req.Options.StateDir)
@@ -1168,9 +1164,14 @@ func TestRunLoadExportsShellSafeSiteScopedEnv(t *testing.T) {
 	}
 }
 
-func TestLoadCommandAcceptsSecretFileFlag(t *testing.T) {
-	secretFile := filepath.Join(t.TempDir(), "jira.xxqh.net.json")
-	if err := os.WriteFile(secretFile, []byte(`{"cookie":"from-file"}`), 0o600); err != nil {
+func TestLoadCommandReadsDefaultSecretPath(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	secretDir := filepath.Join(dataHome, "secret", "httpx")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatalf("mkdir secret dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{"cookie":"from-default"}`), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
 	configDir := t.TempDir()
@@ -1180,17 +1181,59 @@ func TestLoadCommandAcceptsSecretFileFlag(t *testing.T) {
 		t.Fatal("load should execute directly")
 		return ExitConfig
 	})
-	root.SetArgs([]string{"load", "jira.xxqh.net", "--secret", secretFile, "--config", configDir})
+	root.SetArgs([]string{"load", "jira.xxqh.net", "--config", configDir})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute load failed: %v", err)
 	}
 	output := stdout.String()
 	for _, want := range []string{
-		"export jira_xxqh_net_cookie='from-file'\n",
+		"export jira_xxqh_net_cookie='from-default'\n",
 		"export jira_xxqh_net_config='" + filepath.Join(configDir, "jira.xxqh.net.toml") + "'\n",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
+		}
+	}
+}
+
+func TestRunLoadReportsMissingDefaultSecretPathClearly(t *testing.T) {
+	dataHome := t.TempDir()
+	secretDir := filepath.Join(dataHome, "secret", "httpx")
+
+	var stdout bytes.Buffer
+	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{SecretDir: secretDir})
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
+	}
+	for _, want := range []string{
+		`secret file not found at`,
+		filepath.Join(secretDir, "jira.xxqh.net.json"),
+		`mkdir -p`,
+		`expected JSON object like {"cookie":"..."}`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+}
+
+func TestRunLoadReportsInvalidSecretJSONClearly(t *testing.T) {
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`[`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{SecretDir: secretDir})
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
+	}
+	for _, want := range []string{
+		`invalid secret JSON at`,
+		`expected a JSON object like {"cookie":"..."}`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
 		}
 	}
 }
@@ -1316,7 +1359,7 @@ func TestLoginPersistsStateAndRunReusesCookieAndToken(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	secretDir := writeSecret(t, "demo", "alice", "secret")
+	writeSecret(t, "demo", "alice", "secret")
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
 description = "Demo site"
@@ -1334,7 +1377,7 @@ extract_expr = ".body.value"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "login", "demo"})
+	loginStdout, loginStderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed: exit=%d stderr=%s stdout=%s", exitCode, loginStderr, loginStdout)
 	}
@@ -1353,7 +1396,7 @@ extract_expr = ".body.value"
 		t.Fatalf("expected last_login to be set")
 	}
 
-	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "run", "demo", "data"})
+	runStdout, runStderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "run", "demo", "data"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, runStderr, runStdout)
 	}
@@ -1399,7 +1442,7 @@ func TestLoginSupportsJSONBodyAndBasicAuth(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	secretDir := writeSecret(t, "demo", "alice", "secret")
+	writeSecret(t, "demo", "alice", "secret")
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
 description = "Demo site"
@@ -1413,7 +1456,7 @@ save = { "session.auth_header" = "\"Bearer \" + .body.token" }
 `, server.URL))
 
 	stateDir := t.TempDir()
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "login", "demo"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1444,9 +1487,9 @@ base_url = "https://example.com"
 description = "Load data"
 path = "/data"
 `)
-	secretDir := writeSecret(t, "demo", "alice", "secret")
+	writeSecret(t, "demo", "alice", "secret")
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--format", "json", "login", "demo"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitConfig {
 		t.Fatalf("expected config failure, got exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -1462,7 +1505,7 @@ func TestLoginDoesNotPersistStateOnFailure(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	secretDir := writeSecret(t, "demo", "alice", "secret")
+	writeSecret(t, "demo", "alice", "secret")
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
 description = "Demo site"
@@ -1471,7 +1514,7 @@ base_url = %q
 path = "/login"
 `, server.URL))
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "login", "demo"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "login", "demo"})
 	if exitCode == ExitSuccess {
 		t.Fatalf("expected login failure, got stdout=%s", stdout)
 	}
@@ -1508,7 +1551,7 @@ func TestRunSupportsExplicitCookiesFromState(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	secretDir := writeSecret(t, "demo", "alice", "secret")
+	writeSecret(t, "demo", "alice", "secret")
 	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
 version = 1
 description = "Demo site"
@@ -1526,12 +1569,12 @@ extract_expr = ".body.ok"
 `, server.URL))
 
 	stateDir := t.TempDir()
-	_, _, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "login", "demo"})
+	_, _, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "login", "demo"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("login failed with exit=%d", exitCode)
 	}
 
-	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--secret", secretDir, "--state", stateDir, "--format", "json", "run", "demo", "me"})
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--state", stateDir, "--format", "json", "run", "demo", "me"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
 	}
@@ -2602,7 +2645,12 @@ func writeProfileConfig(t *testing.T, profile, content string) string {
 func writeSecret(t *testing.T, site, username, password string) string {
 	t.Helper()
 
-	dir := t.TempDir()
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	dir := filepath.Join(dataHome, "secret", "httpx")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir secret dir: %v", err)
+	}
 	content := fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
 	path := filepath.Join(dir, site+".json")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

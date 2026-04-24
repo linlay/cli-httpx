@@ -57,8 +57,6 @@ func newLoadCommand(options *cliOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&options.global.SecretDir, "secret", options.global.SecretDir, "Secret directory or file path")
-
 	return cmd
 }
 
@@ -70,7 +68,10 @@ func runLoad(stdout io.Writer, site string, opts globalOptions) error {
 
 	var data map[string]any
 	if err := json.Unmarshal(content, &data); err != nil {
-		return fmt.Errorf("%w: decode secret file %q: %v", ErrExecution, path, err)
+		return fmt.Errorf("%w: invalid secret JSON at %q: %v; expected a JSON object like {\"cookie\":\"...\"}", ErrConfig, path, err)
+	}
+	if data == nil {
+		return fmt.Errorf("%w: invalid secret JSON at %q: expected a JSON object like {\"cookie\":\"...\"}", ErrConfig, path)
 	}
 
 	prefix := site
@@ -88,15 +89,6 @@ func runLoad(stdout io.Writer, site string, opts globalOptions) error {
 }
 
 func findSecretFile(dir, site string) ([]byte, string, error) {
-	info, statErr := os.Stat(dir)
-	if statErr == nil && !info.IsDir() {
-		content, err := os.ReadFile(dir)
-		if err != nil {
-			return nil, "", fmt.Errorf("%w: read secret file %q: %v", ErrExecution, dir, err)
-		}
-		return content, dir, nil
-	}
-
 	path := filepath.Join(dir, site+".json")
 	content, err := os.ReadFile(path)
 	if err == nil {
@@ -106,7 +98,7 @@ func findSecretFile(dir, site string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("%w: read secret file %q: %v", ErrExecution, path, err)
 	}
 
-	return nil, "", fmt.Errorf("%w: secret file not found at %q (hint: use --secret to specify path)", ErrConfig, path)
+	return nil, "", fmt.Errorf("%w: secret file not found at %q; create it with: mkdir -p %q && cat > %q; expected JSON object like {\"cookie\":\"...\"}", ErrConfig, path, dir, path)
 }
 
 func stringifyEnvValue(value any) (string, error) {
