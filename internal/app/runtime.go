@@ -161,10 +161,11 @@ func (rt *Runtime) compileAction(req commandRequest, cfg *configFile, state *pro
 	}
 
 	res := resolver{
-		state:  state,
-		reveal: req.Command != commandInspect || req.Options.Reveal,
-		params: req.Options.Params,
-		site:   req.Site,
+		state:     state,
+		reveal:    req.Command != commandInspect || req.Options.Reveal,
+		params:    req.Options.Params,
+		site:      req.Site,
+		secretDir: req.Options.SecretDir,
 	}
 	ctx := context.Background()
 
@@ -339,10 +340,11 @@ func (rt *Runtime) compileLogin(req commandRequest, cfg *configFile, state *prof
 	}
 
 	res := resolver{
-		state:  state,
-		reveal: true,
-		params: req.Options.Params,
-		site:   req.Site,
+		state:     state,
+		reveal:    true,
+		params:    req.Options.Params,
+		site:      req.Site,
+		secretDir: req.Options.SecretDir,
 	}
 	ctx := context.Background()
 

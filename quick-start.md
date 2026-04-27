@@ -35,7 +35,7 @@ retries = 1
 [headers]
 Accept = "application/json"
 User-Agent = "httpx/1.0"
-Cookie = { from = "env", key = "cookie" }
+Cookie = { from = "secret", key = "cookie", trim = true }
 
 [actions.get_worklogs]
 description = "获取 Jira issue 的工时列表"
@@ -50,14 +50,15 @@ params = [
 ```
 
 ```sh
-# 5. 加载 secret 和 config 到当前 shell secret会从默认路径加载，config从指定目录加载
-eval $(httpx load jira.xxxqh.net \
-  --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx)
+# 5. 验证配置；secret 会在 run/inspect 时从默认路径读取，不需要 export 到 env
+httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
+  action jira.xxxqh.net get_worklogs
 ```
 
 ```sh
-# 6. 验证环境变量
-env | grep jira_xxxqh_net
+# 6. 如果仍想把 secret 加载到当前 shell，也可以使用 load
+eval $(httpx load jira.xxxqh.net \
+  --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx)
 ```
 
 ```sh

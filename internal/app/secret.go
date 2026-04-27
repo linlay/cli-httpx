@@ -174,6 +174,26 @@ func findSecretFile(dir, site string) ([]byte, string, error) {
 	return nil, "", fmt.Errorf("%w: secret file not found at %q; create it with: mkdir -p %q && cat > %q; expected JSON object like {\"cookie\":\"...\"}", ErrConfig, path, dir, path)
 }
 
+func loadSecretKey(dir, site, key string) (any, error) {
+	content, path, err := findSecretFile(dir, site)
+	if err != nil {
+		return nil, err
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal(content, &data); err != nil {
+		return nil, fmt.Errorf("%w: invalid secret JSON at %q: %v; expected a JSON object like {\"cookie\":\"...\"}", ErrConfig, path, err)
+	}
+	if data == nil {
+		return nil, fmt.Errorf("%w: invalid secret JSON at %q: expected a JSON object like {\"cookie\":\"...\"}", ErrConfig, path)
+	}
+	value, ok := data[key]
+	if !ok {
+		return nil, fmt.Errorf("%w: secret key %q not found in %q", ErrExecution, key, path)
+	}
+	return value, nil
+}
+
 func stringifyEnvValue(value any) (string, error) {
 	switch v := value.(type) {
 	case string:

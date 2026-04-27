@@ -428,17 +428,26 @@ query = { scope = "action" }
 	}
 }
 
-func TestResolverSupportsEnvFileShellAndState(t *testing.T) {
+func TestResolverSupportsEnvFileSecretShellAndState(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "token.txt")
 	if err := os.WriteFile(filePath, []byte(" file-value \n"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
+	secretDir := filepath.Join(tmpDir, "secret")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatalf("mkdir secret: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, "demo.json"), []byte(`{"cookie":" secret-value \n"}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
 	t.Setenv("HTTPX_ENV_VALUE", " env-value \n")
 
 	r := resolver{
-		state:  &profileState{Values: map[string]string{"saved.token": " state-value \n"}},
-		reveal: true,
+		state:     &profileState{Values: map[string]string{"saved.token": " state-value \n"}},
+		reveal:    true,
+		site:      "demo",
+		secretDir: secretDir,
 	}
 
 	cases := map[string]map[string]any{
@@ -450,6 +459,11 @@ func TestResolverSupportsEnvFileShellAndState(t *testing.T) {
 		"file": {
 			"from": "file",
 			"path": filePath,
+			"trim": true,
+		},
+		"secret": {
+			"from": "secret",
+			"key":  "cookie",
 			"trim": true,
 		},
 		"shell": {
@@ -466,10 +480,11 @@ func TestResolverSupportsEnvFileShellAndState(t *testing.T) {
 	}
 
 	expected := map[string]string{
-		"env":   "env-value",
-		"file":  "file-value",
-		"shell": "shell-value",
-		"state": "state-value",
+		"env":    "env-value",
+		"file":   "file-value",
+		"secret": "secret-value",
+		"shell":  "shell-value",
+		"state":  "state-value",
 	}
 
 	for name, input := range cases {
@@ -480,6 +495,29 @@ func TestResolverSupportsEnvFileShellAndState(t *testing.T) {
 		if value != expected[name] {
 			t.Fatalf("%s resolve mismatch: got %v want %q", name, value, expected[name])
 		}
+	}
+}
+
+func TestResolverReportsMissingSecretKey(t *testing.T) {
+	t.Parallel()
+
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "demo.json"), []byte(`{"cookie":"value"}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	r := resolver{
+		state:     &profileState{Values: map[string]string{}},
+		reveal:    true,
+		site:      "demo",
+		secretDir: secretDir,
+	}
+
+	_, err := r.resolveAny(context.Background(), map[string]any{"from": "secret", "key": "missing"})
+	if err == nil || !errors.Is(err, ErrExecution) {
+		t.Fatalf("expected missing secret key execution error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `secret key "missing" not found`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

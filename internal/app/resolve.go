@@ -16,10 +16,11 @@ import (
 const redactedValue = "***"
 
 type resolver struct {
-	state  *profileState
-	reveal bool
-	params map[string]string
-	site   string
+	state     *profileState
+	reveal    bool
+	params    map[string]string
+	site      string
+	secretDir string
 }
 
 type sourceSpec struct {
@@ -113,6 +114,14 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		spec.Path, ok = input["path"].(string)
 		if !ok || spec.Path == "" {
 			return sourceSpec{}, false, fmt.Errorf("%w: file source requires non-empty path", ErrConfig)
+		}
+	case "secret":
+		if err := rejectUnknownSourceKeys(input, "from", "key", "trim"); err != nil {
+			return sourceSpec{}, false, err
+		}
+		spec.Key, ok = input["key"].(string)
+		if !ok || spec.Key == "" {
+			return sourceSpec{}, false, fmt.Errorf("%w: secret source requires non-empty key", ErrConfig)
 		}
 	case "shell":
 		if err := rejectUnknownSourceKeys(input, "from", "cmd", "timeout_ms", "trim"); err != nil {
@@ -211,6 +220,18 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 			return nil, fmt.Errorf("%w: read file %q: %v", ErrExecution, path, err)
 		}
 		return maybeTrim(string(content), spec.Trim), nil
+	case "secret":
+		if strings.TrimSpace(r.site) == "" {
+			return nil, fmt.Errorf("%w: secret source requires site context", ErrConfig)
+		}
+		if strings.TrimSpace(r.secretDir) == "" {
+			return nil, fmt.Errorf("%w: secret source requires secret directory", ErrConfig)
+		}
+		value, err := loadSecretKey(r.secretDir, r.site, spec.Key)
+		if err != nil {
+			return nil, err
+		}
+		return maybeTrimValue(value, spec.Trim), nil
 	case "shell":
 		timeout := 5 * time.Second
 		if spec.TimeoutMS > 0 {

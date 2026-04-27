@@ -83,6 +83,26 @@ extract_expr = ".body | {id, name, email}"
 
 如果你用 `from = "file"` 读取其他静态 secret，推荐放在 `~/.local/secret/httpx/`；内建登录也默认使用这套目录约定。
 
+如果不想把 secret 先 `export` 到环境变量，可以直接在配置里读取文件或站点 secret JSON：
+
+```toml
+[headers]
+Cookie = { from = "file", path = "~/.local/secret/httpx/jira.gtjaqh.net.cookie", trim = true }
+```
+
+或使用默认 secret JSON 文件 `~/.local/secret/httpx/<site>.json`：
+
+```json
+{
+  "cookie": "JSESSIONID=xxx; atlassian.xsrf.token=yyy"
+}
+```
+
+```toml
+[headers]
+Cookie = { from = "secret", key = "cookie", trim = true }
+```
+
 实际站点的 site 配置更适合放在用户本地配置目录：
 
 - `$XDG_CONFIG_HOME/httpx`
