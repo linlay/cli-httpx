@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+const (
+	agentConfigHomeEnv  = "AP_AGENT_CONFIG_HOME"
+	systemConfigHomeEnv = "AP_SYSTEM_XDG_CONFIG_HOME"
+)
+
 func defaultConfigDir() string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
 		return filepath.Join(dir, "httpx")
@@ -31,6 +36,10 @@ func defaultSecretDir() string {
 }
 
 func resolveConfigPath(configDir, site string, profile ...string) (string, error) {
+	return resolveConfigPathWithFallback(configDir, true, site, profile...)
+}
+
+func resolveConfigPathWithFallback(configDir string, allowFallback bool, site string, profile ...string) (string, error) {
 	if site == "" {
 		return "", fmt.Errorf("%w: site is required", ErrConfig)
 	}
@@ -39,7 +48,7 @@ func resolveConfigPath(configDir, site string, profile ...string) (string, error
 		configProfile = strings.Trim(strings.TrimSpace(profile[0]), "/")
 	}
 
-	if configDir == defaultConfigDir() {
+	if allowFallback && sameConfigPath(configDir, defaultConfigDir()) {
 		envKey := siteConfigEnvKey(site)
 		if configProfile != "" {
 			envKey = siteConfigDirEnvKey(site, configProfile)
@@ -49,11 +58,24 @@ func resolveConfigPath(configDir, site string, profile ...string) (string, error
 		}
 	}
 
-	if info, err := os.Stat(configDir); err == nil && !info.IsDir() {
-		return "", fmt.Errorf("%w: config path %q must be a directory", ErrConfig, configDir)
+	configDirs, err := configSearchDirs(configDir, allowFallback)
+	if err != nil {
+		return "", err
 	}
-
-	return filepath.Join(configDir, site+".toml"), nil
+	for _, dir := range configDirs {
+		if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+			return "", fmt.Errorf("%w: config path %q must be a directory", ErrConfig, dir)
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: stat config path %q: %v", ErrConfig, dir, err)
+		}
+		path := filepath.Join(dir, site+".toml")
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("%w: stat config path %q: %v", ErrConfig, path, err)
+		}
+	}
+	return filepath.Join(configDirs[0], site+".toml"), nil
 }
 
 func resolveLoadedConfigPath(envKey, envPath, site string) (string, error) {
@@ -73,10 +95,36 @@ func resolveLoadedConfigPath(envKey, envPath, site string) (string, error) {
 }
 
 func listConfigSites(configDir string) ([]string, error) {
+	return listConfigSitesWithFallback(configDir, true)
+}
+
+func listConfigSitesWithFallback(configDir string, allowFallback bool) ([]string, error) {
+	configDirs, err := configSearchDirs(configDir, allowFallback)
+	if err != nil {
+		return nil, err
+	}
+	sitesByName := map[string]struct{}{}
+	for _, dir := range configDirs {
+		sites, err := listConfigSitesInDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, site := range sites {
+			sitesByName[site] = struct{}{}
+		}
+	}
+	sites := make([]string, 0, len(sitesByName))
+	for site := range sitesByName {
+		sites = append(sites, site)
+	}
+	sort.Strings(sites)
+	return sites, nil
+}
+
+func listConfigSitesInDir(configDir string) ([]string, error) {
 	if info, err := os.Stat(configDir); err == nil && !info.IsDir() {
 		return nil, fmt.Errorf("%w: config path %q must be a directory", ErrConfig, configDir)
 	}
-
 	entries, err := os.ReadDir(configDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -102,6 +150,38 @@ func listConfigSites(configDir string) ([]string, error) {
 	}
 	sort.Strings(sites)
 	return sites, nil
+}
+
+func configSearchDirs(configDir string, allowFallback bool) ([]string, error) {
+	if !allowFallback {
+		return []string{configDir}, nil
+	}
+	agentConfigHome := strings.TrimSpace(os.Getenv(agentConfigHomeEnv))
+	if agentConfigHome == "" || !sameConfigPath(configDir, defaultConfigDir()) {
+		return []string{configDir}, nil
+	}
+	dirs := []string{configDir}
+	if systemConfigHome := strings.TrimSpace(os.Getenv(systemConfigHomeEnv)); systemConfigHome != "" {
+		dirs = appendUniqueConfigDir(dirs, filepath.Join(systemConfigHome, "httpx"))
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	return appendUniqueConfigDir(dirs, filepath.Join(home, ".config", "httpx")), nil
+}
+
+func appendUniqueConfigDir(dirs []string, dir string) []string {
+	for _, existing := range dirs {
+		if sameConfigPath(existing, dir) {
+			return dirs
+		}
+	}
+	return append(dirs, dir)
+}
+
+func sameConfigPath(left, right string) bool {
+	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func defaultStateDir() string {

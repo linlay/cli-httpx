@@ -677,6 +677,9 @@ func TestParseArgsSupportsGlobalFlagsAnywhere(t *testing.T) {
 	if req.Options.ConfigDir != "/tmp/httpx-config" {
 		t.Fatalf("unexpected config dir: %q", req.Options.ConfigDir)
 	}
+	if !req.Options.ConfigExplicit {
+		t.Fatal("expected explicit config flag")
+	}
 	if req.Options.Params["user"] != "alice" {
 		t.Fatalf("unexpected params: %#v", req.Options.Params)
 	}
@@ -762,6 +765,127 @@ func TestDefaultConfigDirUsesHomeConfigPath(t *testing.T) {
 
 	if got := defaultConfigDir(); got != "/root/.config/httpx" {
 		t.Fatalf("unexpected default config dir: %q", got)
+	}
+}
+
+func TestAgentConfigOverlayUsesAgentSiteThenSystemFallback(t *testing.T) {
+	home := t.TempDir()
+	agentConfigHome := t.TempDir()
+	systemConfigHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", agentConfigHome)
+	t.Setenv(agentConfigHomeEnv, agentConfigHome)
+	t.Setenv(systemConfigHomeEnv, systemConfigHome)
+
+	writeSite := func(configHome, site, description string) string {
+		t.Helper()
+		dir := filepath.Join(configHome, "httpx")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, site+".toml")
+		raw := "version = 1\ndescription = \"" + description + "\"\nbase_url = \"https://example.com\"\n\n[actions.get]\ndescription = \"Get\"\npath = \"/\"\n"
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	systemOnlyPath := writeSite(systemConfigHome, "system-only", "system")
+	writeSite(systemConfigHome, "shared", "system-shared")
+	agentSharedPath := writeSite(agentConfigHome, "shared", "agent-shared")
+
+	configDir := defaultConfigDir()
+	path, err := resolveConfigPathWithFallback(configDir, true, "system-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != systemOnlyPath {
+		t.Fatalf("system fallback path = %q, want %q", path, systemOnlyPath)
+	}
+	path, err = resolveConfigPathWithFallback(configDir, true, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != agentSharedPath {
+		t.Fatalf("agent override path = %q, want %q", path, agentSharedPath)
+	}
+
+	sites, err := listConfigSitesWithFallback(configDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(sites, ","), "shared,system-only"; got != want {
+		t.Fatalf("sites = %q, want %q", got, want)
+	}
+	cfg, loadedPath, err := loadSiteConfigWithFallback(configDir, true, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedPath != agentSharedPath || cfg.Description != "agent-shared" {
+		t.Fatalf("unexpected agent-loaded config path=%q config=%#v", loadedPath, cfg)
+	}
+	exportedPath, _, err := loadedConfigExportsWithFallback(configDir, true, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exportedPath != agentSharedPath {
+		t.Fatalf("load exported config path = %q, want %q", exportedPath, agentSharedPath)
+	}
+}
+
+func TestAgentConfigOverlayDoesNotFallbackAfterAgentConfigIsSelected(t *testing.T) {
+	agentConfigHome := t.TempDir()
+	systemConfigHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", agentConfigHome)
+	t.Setenv(agentConfigHomeEnv, agentConfigHome)
+	t.Setenv(systemConfigHomeEnv, systemConfigHome)
+	for _, configHome := range []string{agentConfigHome, systemConfigHome} {
+		if err := os.MkdirAll(filepath.Join(configHome, "httpx"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(agentConfigHome, "httpx", "shared.toml"), []byte("version = 1\n[actions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(systemConfigHome, "httpx", "shared.toml"), []byte("version = 1\nbase_url = \"https://example.com\"\n[actions.get]\npath = \"/\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadSiteConfigWithFallback(defaultConfigDir(), true, "shared"); err == nil || !strings.Contains(err.Error(), filepath.Join(agentConfigHome, "httpx", "shared.toml")) {
+		t.Fatalf("expected agent config parse error, got %v", err)
+	}
+}
+
+func TestAgentConfigOverlayHonorsXDGConfigHomeOverride(t *testing.T) {
+	agentConfigHome := t.TempDir()
+	customConfigHome := t.TempDir()
+	t.Setenv(agentConfigHomeEnv, agentConfigHome)
+	t.Setenv("XDG_CONFIG_HOME", customConfigHome)
+
+	dirs, err := configSearchDirs(defaultConfigDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := dirs[0], filepath.Join(customConfigHome, "httpx"); got != want {
+		t.Fatalf("primary config directory = %q, want %q", got, want)
+	}
+}
+
+func TestExplicitConfigDisablesAgentConfigFallback(t *testing.T) {
+	agentConfigHome := t.TempDir()
+	explicitDir := t.TempDir()
+	t.Setenv(agentConfigHomeEnv, agentConfigHome)
+	if err := os.MkdirAll(filepath.Join(agentConfigHome, "httpx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentConfigHome, "httpx", "shared.toml"), []byte("version = 1\nbase_url = \"https://example.com\"\n[actions.get]\npath = \"/\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := resolveConfigPathWithFallback(explicitDir, false, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := path, filepath.Join(explicitDir, "shared.toml"); got != want {
+		t.Fatalf("explicit config path = %q, want %q", got, want)
 	}
 }
 

@@ -16,6 +16,7 @@ type requestRunner func(commandRequest) int
 type cliOptions struct {
 	global    globalOptions
 	formatSet bool
+	configSet bool
 	version   bool
 }
 
@@ -28,6 +29,29 @@ type formatValue struct {
 type extractValue struct {
 	value *map[string]any
 	set   bool
+}
+
+type configDirValue struct {
+	value *string
+	set   *bool
+}
+
+func (v *configDirValue) String() string {
+	if v == nil || v.value == nil {
+		return ""
+	}
+	return *v.value
+}
+
+func (v *configDirValue) Set(raw string) error {
+	if v == nil || v.value == nil {
+		return fmt.Errorf("internal error: missing config directory target")
+	}
+	*v.value = raw
+	if v.set != nil {
+		*v.set = true
+	}
+	return nil
 }
 
 func (p *paramValues) String() string {
@@ -138,7 +162,7 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner
 	root.CompletionOptions.DisableDefaultCmd = true
 
 	flags := root.PersistentFlags()
-	flags.StringVar(&options.global.ConfigDir, "config", options.global.ConfigDir, "Configuration directory")
+	flags.Var(&configDirValue{value: &options.global.ConfigDir, set: &options.configSet}, "config", "Configuration directory")
 	flags.StringVar(&options.global.StateDir, "state", options.global.StateDir, "State directory")
 	flags.DurationVar(&options.global.Timeout, "timeout", 0, "Request timeout override")
 	flags.BoolVar(&options.global.Reveal, "reveal", false, "Reveal sensitive values in inspect output")
@@ -264,6 +288,7 @@ func buildCommandRequest(kind commandKind, args []string, options *cliOptions) (
 
 func (o *cliOptions) snapshot() globalOptions {
 	result := o.global
+	result.ConfigExplicit = o.configSet
 	if len(o.global.Params) > 0 {
 		result.Params = make(map[string]string, len(o.global.Params))
 		for key, value := range o.global.Params {

@@ -24,15 +24,16 @@ const (
 )
 
 type globalOptions struct {
-	ConfigDir    string
-	Format       outputFormat
-	SecretDir    string
-	Timeout      time.Duration
-	StateDir     string
-	Inspect      bool
-	Reveal       bool
-	Params       map[string]string
-	ExtractInput map[string]any
+	ConfigDir      string
+	ConfigExplicit bool
+	Format         outputFormat
+	SecretDir      string
+	Timeout        time.Duration
+	StateDir       string
+	Inspect        bool
+	Reveal         bool
+	Params         map[string]string
+	ExtractInput   map[string]any
 }
 
 type commandRequest struct {

@@ -84,7 +84,7 @@ func runLoad(stdout io.Writer, site string, opts globalOptions) error {
 		}
 		fmt.Fprintf(stdout, "export %s=%s\n", envKey, shellQuote(envValue))
 	}
-	configPath, configAliases, err := loadedConfigExports(opts.ConfigDir, site)
+	configPath, configAliases, err := loadedConfigExportsWithFallback(opts.ConfigDir, !opts.ConfigExplicit, site)
 	if err != nil {
 		return err
 	}
@@ -102,13 +102,30 @@ type envExport struct {
 }
 
 func loadedConfigExports(configDir, site string) (string, []envExport, error) {
+	return loadedConfigExportsWithFallback(configDir, true, site)
+}
+
+func loadedConfigExportsWithFallback(configDir string, allowFallback bool, site string) (string, []envExport, error) {
 	if strings.TrimSpace(configDir) == "" {
 		return site + ".toml", nil, nil
 	}
-	matches, err := findSiteConfigFiles(configDir, site)
+	configDirs, err := configSearchDirs(configDir, allowFallback)
 	if err != nil {
 		return "", nil, err
 	}
+	for _, dir := range configDirs {
+		matches, err := findSiteConfigFiles(dir, site)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(matches) > 0 {
+			return configExportsForMatches(dir, site, matches)
+		}
+	}
+	return filepath.Join(configDirs[0], site+".toml"), nil, nil
+}
+
+func configExportsForMatches(configDir, site string, matches []string) (string, []envExport, error) {
 	if len(matches) == 0 {
 		return filepath.Join(configDir, site+".toml"), nil, nil
 	}

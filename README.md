@@ -12,6 +12,8 @@
 - macOS Intel：`httpx_vX.Y.Z_darwin_amd64.tar.gz`
 - Linux ARM64：`httpx_vX.Y.Z_linux_arm64.tar.gz`
 - Linux AMD64：`httpx_vX.Y.Z_linux_amd64.tar.gz`
+- Windows ARM64：`httpx_vX.Y.Z_windows_arm64.zip`
+- Windows AMD64：`httpx_vX.Y.Z_windows_amd64.zip`
 
 解压后可以先确认版本信息：
 
@@ -20,6 +22,8 @@ tar -xzf httpx_v0.1.0_darwin_arm64.tar.gz
 ./httpx version
 ./httpx --version
 ```
+
+Windows 使用 `Expand-Archive` 或其他 zip 工具解压后运行 `httpx.exe version`。
 
 如果从源码构建：
 
@@ -259,6 +263,10 @@ httpx run <site> <action>
 - secret：
   - 默认目录：`$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
   - 文件名：`<site>.json`
+
+在 Agent Platform 中，`$XDG_CONFIG_HOME` 指向当前 agent 的 `.config`。httpx 会先读取 `$XDG_CONFIG_HOME/httpx/<site>.toml`，同名 site 缺失时再回退系统 XDG 目录或 `~/.config/httpx`；`sites` 会显示去重后的并集，重名 site 使用 agent 配置。`run`、`inspect`、`login`、discovery 命令和 `load` 都使用相同解析规则。
+
+显式 `--config <dir>` 只读取该目录，不使用回退。agent 的 `.config` 仅放静态 site 配置；secret 与 state 继续使用上面的原有目录约定，包含 token/cookie 的文件不得提交。
 - state：
   - 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
   - 文件名：`<site>.json`
@@ -337,6 +345,8 @@ GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn scripts/release/b
 - `dist/v0.1.0/httpx_v0.1.0_darwin_arm64.tar.gz`
 - `dist/v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz`
 - `dist/v0.1.0/httpx_v0.1.0_linux_arm64.tar.gz`
+- `dist/v0.1.0/httpx_v0.1.0_windows_amd64.zip`
+- `dist/v0.1.0/httpx_v0.1.0_windows_arm64.zip`
 - `dist/v0.1.0/httpx_v0.1.0_checksums.txt`
 
 4. 校验摘要：
