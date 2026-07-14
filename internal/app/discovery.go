@@ -124,7 +124,7 @@ func (rt *Runtime) runListSites(req commandRequest) int {
 }
 
 func (rt *Runtime) runShowSite(req commandRequest) int {
-	cfg, _, err := loadSiteConfigWithFallback(req.Options.ConfigDir, !req.Options.ConfigExplicit, req.Site, req.ConfigProfile)
+	cfg, _, err := loadSiteConfigWithFallback(req.Options.ConfigDir, !req.Options.ConfigExplicit, req.Site)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
@@ -157,7 +157,7 @@ func (rt *Runtime) runShowSite(req commandRequest) int {
 }
 
 func (rt *Runtime) runListActions(req commandRequest) int {
-	cfg, _, err := loadSiteConfigWithFallback(req.Options.ConfigDir, !req.Options.ConfigExplicit, req.Site, req.ConfigProfile)
+	cfg, _, err := loadSiteConfigWithFallback(req.Options.ConfigDir, !req.Options.ConfigExplicit, req.Site)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
@@ -200,7 +200,7 @@ func (rt *Runtime) runListActions(req commandRequest) int {
 }
 
 func (rt *Runtime) runShowAction(req commandRequest) int {
-	cfg, _, err := loadSiteConfigWithFallback(req.Options.ConfigDir, !req.Options.ConfigExplicit, req.Site, req.ConfigProfile)
+	cfg, _, err := loadSiteConfigWithFallback(req.Options.ConfigDir, !req.Options.ConfigExplicit, req.Site)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
@@ -267,12 +267,12 @@ func (rt *Runtime) runShowState(req commandRequest) int {
 	return ExitSuccess
 }
 
-func loadSiteConfig(configDir, site string, profile ...string) (*configFile, string, error) {
-	return loadSiteConfigWithFallback(configDir, true, site, profile...)
+func loadSiteConfig(configDir, site string) (*configFile, string, error) {
+	return loadSiteConfigWithFallback(configDir, true, site)
 }
 
-func loadSiteConfigWithFallback(configDir string, allowFallback bool, site string, profile ...string) (*configFile, string, error) {
-	path, err := resolveConfigPathWithFallback(configDir, allowFallback, site, profile...)
+func loadSiteConfigWithFallback(configDir string, allowFallback bool, site string) (*configFile, string, error) {
+	path, err := resolveConfigPathWithFallback(configDir, allowFallback, site)
 	if err != nil {
 		return nil, "", err
 	}

@@ -9,17 +9,13 @@ import (
 )
 
 const (
-	agentConfigHomeEnv  = "AP_AGENT_CONFIG_HOME"
-	systemConfigHomeEnv = "AP_SYSTEM_XDG_CONFIG_HOME"
+	agentConfigHomeEnv = "HTTPX_AGENT_CONFIG_HOME"
 )
 
 func defaultConfigDir() string {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "httpx")
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "."
+		return filepath.Join(".config", "httpx")
 	}
 	return filepath.Join(home, ".config", "httpx")
 }
@@ -35,27 +31,13 @@ func defaultSecretDir() string {
 	return filepath.Join(home, ".local", "secret", "httpx")
 }
 
-func resolveConfigPath(configDir, site string, profile ...string) (string, error) {
-	return resolveConfigPathWithFallback(configDir, true, site, profile...)
+func resolveConfigPath(configDir, site string) (string, error) {
+	return resolveConfigPathWithFallback(configDir, true, site)
 }
 
-func resolveConfigPathWithFallback(configDir string, allowFallback bool, site string, profile ...string) (string, error) {
+func resolveConfigPathWithFallback(configDir string, allowFallback bool, site string) (string, error) {
 	if site == "" {
 		return "", fmt.Errorf("%w: site is required", ErrConfig)
-	}
-	configProfile := ""
-	if len(profile) > 0 {
-		configProfile = strings.Trim(strings.TrimSpace(profile[0]), "/")
-	}
-
-	if allowFallback && sameConfigPath(configDir, defaultConfigDir()) {
-		envKey := siteConfigEnvKey(site)
-		if configProfile != "" {
-			envKey = siteConfigDirEnvKey(site, configProfile)
-		}
-		if envPath, ok := os.LookupEnv(envKey); ok && strings.TrimSpace(envPath) != "" {
-			return resolveLoadedConfigPath(envKey, envPath, site)
-		}
 	}
 
 	configDirs, err := configSearchDirs(configDir, allowFallback)
@@ -76,22 +58,6 @@ func resolveConfigPathWithFallback(configDir string, allowFallback bool, site st
 		}
 	}
 	return filepath.Join(configDirs[0], site+".toml"), nil
-}
-
-func resolveLoadedConfigPath(envKey, envPath, site string) (string, error) {
-	if info, err := os.Stat(envPath); err == nil {
-		if info.IsDir() {
-			return filepath.Join(envPath, site+".toml"), nil
-		}
-		return envPath, nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("%w: stat config path from %s: %v", ErrConfig, envKey, err)
-	}
-
-	if filepath.Ext(envPath) == ".toml" {
-		return envPath, nil
-	}
-	return filepath.Join(envPath, site+".toml"), nil
 }
 
 func listConfigSites(configDir string) ([]string, error) {
@@ -153,22 +119,14 @@ func listConfigSitesInDir(configDir string) ([]string, error) {
 }
 
 func configSearchDirs(configDir string, allowFallback bool) ([]string, error) {
-	if !allowFallback {
+	if !allowFallback || !sameConfigPath(configDir, defaultConfigDir()) {
 		return []string{configDir}, nil
 	}
-	agentConfigHome := strings.TrimSpace(os.Getenv(agentConfigHomeEnv))
-	if agentConfigHome == "" || !sameConfigPath(configDir, defaultConfigDir()) {
-		return []string{configDir}, nil
+	dirs := []string{}
+	if agentConfigHome := strings.TrimSpace(os.Getenv(agentConfigHomeEnv)); agentConfigHome != "" {
+		dirs = appendUniqueConfigDir(dirs, filepath.Join(agentConfigHome, "httpx"))
 	}
-	dirs := []string{configDir}
-	if systemConfigHome := strings.TrimSpace(os.Getenv(systemConfigHomeEnv)); systemConfigHome != "" {
-		dirs = appendUniqueConfigDir(dirs, filepath.Join(systemConfigHome, "httpx"))
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	return appendUniqueConfigDir(dirs, filepath.Join(home, ".config", "httpx")), nil
+	return appendUniqueConfigDir(dirs, defaultConfigDir()), nil
 }
 
 func appendUniqueConfigDir(dirs []string, dir string) []string {

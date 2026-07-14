@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -84,98 +83,7 @@ func runLoad(stdout io.Writer, site string, opts globalOptions) error {
 		}
 		fmt.Fprintf(stdout, "export %s=%s\n", envKey, shellQuote(envValue))
 	}
-	configPath, configAliases, err := loadedConfigExportsWithFallback(opts.ConfigDir, !opts.ConfigExplicit, site)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "export %s=%s\n", siteConfigEnvKey(site), shellQuote(configPath))
-	for _, alias := range configAliases {
-		fmt.Fprintf(stdout, "export %s=%s\n", alias.Key, shellQuote(alias.Value))
-	}
-
 	return nil
-}
-
-type envExport struct {
-	Key   string
-	Value string
-}
-
-func loadedConfigExports(configDir, site string) (string, []envExport, error) {
-	return loadedConfigExportsWithFallback(configDir, true, site)
-}
-
-func loadedConfigExportsWithFallback(configDir string, allowFallback bool, site string) (string, []envExport, error) {
-	if strings.TrimSpace(configDir) == "" {
-		return site + ".toml", nil, nil
-	}
-	configDirs, err := configSearchDirs(configDir, allowFallback)
-	if err != nil {
-		return "", nil, err
-	}
-	for _, dir := range configDirs {
-		matches, err := findSiteConfigFiles(dir, site)
-		if err != nil {
-			return "", nil, err
-		}
-		if len(matches) > 0 {
-			return configExportsForMatches(dir, site, matches)
-		}
-	}
-	return filepath.Join(configDirs[0], site+".toml"), nil, nil
-}
-
-func configExportsForMatches(configDir, site string, matches []string) (string, []envExport, error) {
-	if len(matches) == 0 {
-		return filepath.Join(configDir, site+".toml"), nil, nil
-	}
-
-	configPath := ""
-	aliases := []envExport{}
-	for _, match := range matches {
-		configDirForSite := filepath.Dir(match)
-		relDir, err := filepath.Rel(configDir, configDirForSite)
-		if err != nil {
-			return "", nil, fmt.Errorf("%w: resolve config directory %q relative to %q: %v", ErrConfig, configDirForSite, configDir, err)
-		}
-		if relDir == "." {
-			configPath = match
-			continue
-		}
-		aliases = append(aliases, envExport{
-			Key:   siteConfigDirEnvKey(site, relDir),
-			Value: match,
-		})
-	}
-	if configPath == "" {
-		configPath = matches[0]
-	}
-	return configPath, aliases, nil
-}
-
-func findSiteConfigFiles(configDir, site string) ([]string, error) {
-	target := site + ".toml"
-	var matches []string
-	err := filepath.WalkDir(configDir, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return fmt.Errorf("%w: read config path %q: %v", ErrConfig, path, err)
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if entry.Name() == target {
-			matches = append(matches, path)
-		}
-		return nil
-	})
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	sort.Strings(matches)
-	return matches, nil
 }
 
 func findSecretFile(dir, site string) ([]byte, string, error) {
@@ -235,13 +143,4 @@ func shellQuote(s string) string {
 
 func secretEnvKey(site, key string) string {
 	return strings.ReplaceAll(site+"."+key, ".", "_")
-}
-
-func siteConfigEnvKey(site string) string {
-	return secretEnvKey(site, "config")
-}
-
-func siteConfigDirEnvKey(site, relDir string) string {
-	key := strings.ReplaceAll(filepath.ToSlash(relDir), "/", ".")
-	return secretEnvKey(site, key+".config")
 }

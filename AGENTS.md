@@ -220,8 +220,10 @@ httpx inspect <site> <action>
 - 如果设置了 `XDG_STATE_HOME`，目录为 `$XDG_STATE_HOME/httpx`
 - 否则目录为 `~/.local/state/httpx`
 - secret 默认目录为 `$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
-- config 默认目录为 `$XDG_CONFIG_HOME/httpx` 或 `~/.config/httpx`
+- config 系统目录固定为 `~/.config/httpx`；设置 `HTTPX_AGENT_CONFIG_HOME` 后，会优先读取 `$HTTPX_AGENT_CONFIG_HOME/httpx`
 - 也可以用 `--state <path>` 覆盖默认目录
+
+config 查找优先级：显式 `--config <dir>` 独占；否则先 agent 私有配置，再回退 `~/.config/httpx`。config 不读取 `XDG_CONFIG_HOME`，不兼容旧 `AP_*`、单站点 `*_CONFIG` 环境变量或 `<site>/<profile>` 语法。
 
 运行约定：
 
@@ -345,7 +347,8 @@ CLI 有两种主要输出模式：
 
 发布版本号来源：
 
-- Git tag，例如 `v0.1.0`
+- 根目录受 Git 跟踪的 `VERSION` 文件，例如 `v0.1.1`
+- 正式发布的 Git tag 必须与 `VERSION` 内容完全一致
 
 构建时注入：
 
@@ -355,7 +358,7 @@ CLI 有两种主要输出模式：
 
 本地打包脚本：
 
-- `scripts/release/build.sh <version>`
+- `scripts/release/build.sh`（只从 `VERSION` 读取版本，不接受命令行或环境变量覆盖）
 
 产物约定：
 

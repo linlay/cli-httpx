@@ -2,7 +2,7 @@
 
 `httpx` 是一个面向智能体和自动化脚本的 HTTP CLI，用来把“登录、带状态请求、按业务提取响应字段”固化进 site 配置。
 
-用户安装、测试、发版看这个 README；设计、状态模型和内部机制见 [CLAUDE.md](./CLAUDE.md)。
+用户安装、测试、发版看这个 README；设计、状态模型和内部机制见 [AGENTS.md](./AGENTS.md)。
 
 ## 安装
 
@@ -109,8 +109,7 @@ Cookie = { from = "secret", key = "cookie", trim = true }
 
 实际站点的 site 配置更适合放在用户本地配置目录：
 
-- `$XDG_CONFIG_HOME/httpx`
-- 或 `~/.config/httpx`
+- `~/.config/httpx`
 
 如果终端访问目标站点需要走代理，可以在 site 顶层或 action 中配置：
 
@@ -146,7 +145,7 @@ CLI 现在使用 Cobra 风格的根命令和子命令组织；帮助信息统一
 
 常用全局参数：
 
-- `--config <dir>`：配置目录，读取 `<dir>/<site>.toml`
+- `--config <dir>`：独占配置目录，只读取 `<dir>/<site>.toml`
 - `--state <dir>`：覆盖默认状态目录
 - `--format text|json`：输出格式
 - `--param key=value`：传入运行时参数，可重复
@@ -258,15 +257,15 @@ httpx run <site> <action>
 推荐约定：
 
 - config：
-  - 默认目录：`$XDG_CONFIG_HOME/httpx` 或 `~/.config/httpx`
+  - 系统配置目录：`~/.config/httpx`
   - 文件名：`<site>.toml`
 - secret：
   - 默认目录：`$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
   - 文件名：`<site>.json`
 
-在 Agent Platform 中，`$XDG_CONFIG_HOME` 指向当前 agent 的 `.config`。httpx 会先读取 `$XDG_CONFIG_HOME/httpx/<site>.toml`，同名 site 缺失时再回退系统 XDG 目录或 `~/.config/httpx`；`sites` 会显示去重后的并集，重名 site 使用 agent 配置。`run`、`inspect`、`login`、discovery 命令和 `load` 都使用相同解析规则。
+在 Agent Platform 中，可设置 `HTTPX_AGENT_CONFIG_HOME` 指向当前 agent 的私有配置根目录。未传 `--config` 时，httpx 会先读取 `$HTTPX_AGENT_CONFIG_HOME/httpx/<site>.toml`，同名 site 缺失时才读取 `~/.config/httpx/<site>.toml`；`sites` 显示两侧的去重并集，重名 site 使用 agent 配置。agent 中存在同名文件但无法解析时会直接报错，不会回退系统配置。
 
-显式 `--config <dir>` 只读取该目录，不使用回退。agent 的 `.config` 仅放静态 site 配置；secret 与 state 继续使用上面的原有目录约定，包含 token/cookie 的文件不得提交。
+显式 `--config <dir>` 只读取该目录，不使用 agent 或系统回退。config 定位不使用 `XDG_CONFIG_HOME`，也不支持单站点 `*_CONFIG` 环境变量或 `<site>/<profile>` 写法。agent 目录仅放静态 site 配置；secret 与 state 继续使用上面的原有 XDG 目录约定，包含 token/cookie 的文件不得提交。
 - state：
   - 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
   - 文件名：`<site>.json`
@@ -312,7 +311,7 @@ GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn go test ./...
 
 ## 手工发布
 
-推荐把 Git tag 作为正式版本号来源，例如 `v0.1.0`。
+根目录受 Git 跟踪的 `VERSION` 是唯一的发布版本来源，格式为 Git tag 风格的版本号，例如 `v0.1.1`。正式发布时，Git tag 必须与该文件内容完全一致。
 
 1. 跑测试：
 
@@ -320,66 +319,73 @@ GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn go test ./...
 go test ./...
 ```
 
-2. 创建并推送 tag：
+2. 读取已提交的版本并创建、推送同名 tag：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+version="$(cat VERSION)"
+git status --short VERSION
+git tag "$version"
+git push origin "$version"
 ```
 
 3. 在 tag 对应提交上本地打包：
 
 ```bash
-scripts/release/build.sh v0.1.0
+version="$(cat VERSION)"
+scripts/release/build.sh
 ```
 
 如果网络不稳定，可以显式带上代理环境变量：
 
 ```bash
-GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn scripts/release/build.sh v0.1.0
+version="$(cat VERSION)"
+GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn scripts/release/build.sh
 ```
 
 打包完成后会生成：
 
-- `dist/v0.1.0/httpx_v0.1.0_darwin_amd64.tar.gz`
-- `dist/v0.1.0/httpx_v0.1.0_darwin_arm64.tar.gz`
-- `dist/v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz`
-- `dist/v0.1.0/httpx_v0.1.0_linux_arm64.tar.gz`
-- `dist/v0.1.0/httpx_v0.1.0_windows_amd64.zip`
-- `dist/v0.1.0/httpx_v0.1.0_windows_arm64.zip`
-- `dist/v0.1.0/httpx_v0.1.0_checksums.txt`
+- `dist/$version/httpx_${version}_darwin_amd64.tar.gz`
+- `dist/$version/httpx_${version}_darwin_arm64.tar.gz`
+- `dist/$version/httpx_${version}_linux_amd64.tar.gz`
+- `dist/$version/httpx_${version}_linux_arm64.tar.gz`
+- `dist/$version/httpx_${version}_windows_amd64.zip`
+- `dist/$version/httpx_${version}_windows_arm64.zip`
+- `dist/$version/httpx_${version}_checksums.txt`
 
 4. 校验摘要：
 
 ```bash
-cd dist/v0.1.0
-shasum -a 256 -c httpx_v0.1.0_checksums.txt
+version="$(cat VERSION)"
+cd "dist/$version"
+shasum -a 256 -c "httpx_${version}_checksums.txt"
 ```
 
 5. 上传到 `cligrep.com` 的 CLI 发布目录：
 
 ```bash
-ssh singapore02 'mkdir -p /docker/cli-releases/httpx/v0.1.0 /docker/cli-releases/httpx/latest'
+version="$(cat VERSION)"
+ssh singapore02 "mkdir -p /docker/cli-releases/httpx/$version /docker/cli-releases/httpx/latest"
 scp \
-  dist/v0.1.0/httpx_v0.1.0_darwin_amd64.tar.gz \
-  dist/v0.1.0/httpx_v0.1.0_darwin_arm64.tar.gz \
-  dist/v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz \
-  dist/v0.1.0/httpx_v0.1.0_linux_arm64.tar.gz \
-  dist/v0.1.0/httpx_v0.1.0_checksums.txt \
-  singapore02:/docker/cli-releases/httpx/v0.1.0/
+  "dist/$version/httpx_${version}_darwin_amd64.tar.gz" \
+  "dist/$version/httpx_${version}_darwin_arm64.tar.gz" \
+  "dist/$version/httpx_${version}_linux_amd64.tar.gz" \
+  "dist/$version/httpx_${version}_linux_arm64.tar.gz" \
+  "dist/$version/httpx_${version}_checksums.txt" \
+  "singapore02:/docker/cli-releases/httpx/$version/"
 ```
 
 6. 在服务器上更新稳定入口：
 
 ```bash
-ssh singapore02 '
+version="$(cat VERSION)"
+ssh singapore02 "
   set -euo pipefail
   cd /docker/cli-releases/httpx
   mkdir -p latest
-  ln -sfn ../v0.1.0/httpx_v0.1.0_darwin_amd64.tar.gz latest/httpx_darwin_amd64.tar.gz
-  ln -sfn ../v0.1.0/httpx_v0.1.0_darwin_arm64.tar.gz latest/httpx_darwin_arm64.tar.gz
-  ln -sfn ../v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz latest/httpx_linux_amd64.tar.gz
-  ln -sfn ../v0.1.0/httpx_v0.1.0_linux_arm64.tar.gz latest/httpx_linux_arm64.tar.gz
+  ln -sfn ../$version/httpx_${version}_darwin_amd64.tar.gz latest/httpx_darwin_amd64.tar.gz
+  ln -sfn ../$version/httpx_${version}_darwin_arm64.tar.gz latest/httpx_darwin_arm64.tar.gz
+  ln -sfn ../$version/httpx_${version}_linux_amd64.tar.gz latest/httpx_linux_amd64.tar.gz
+  ln -sfn ../$version/httpx_${version}_linux_arm64.tar.gz latest/httpx_linux_arm64.tar.gz
   (
     cd latest
     shasum -a 256 \
@@ -389,13 +395,14 @@ ssh singapore02 '
       httpx_linux_arm64.tar.gz \
       > checksums.txt
   )
-'
+"
 ```
 
 7. 验证公网下载地址：
 
 ```bash
-curl -I https://cligrep.com/cli-releases/httpx/v0.1.0/httpx_v0.1.0_linux_amd64.tar.gz
+version="$(cat VERSION)"
+curl -I "https://cligrep.com/cli-releases/httpx/$version/httpx_${version}_linux_amd64.tar.gz"
 curl -I https://cligrep.com/cli-releases/httpx/latest/httpx_linux_amd64.tar.gz
 ```
 
@@ -429,7 +436,7 @@ state 文件是本地明文 JSON。更完整的状态模型、写回时机和安
 
 ### `version = 1` 是发布版本号吗？
 
-不是。它表示配置 schema 版本。CLI 的发布版本来自 Git tag，并在构建时写入二进制。
+不是。它表示配置 schema 版本。CLI 的发布版本来自根目录受 Git 跟踪的 `VERSION` 文件，并在构建时写入二进制；正式发布的 Git tag 必须与该文件内容一致。
 
 ### 看哪里了解内部设计？
 

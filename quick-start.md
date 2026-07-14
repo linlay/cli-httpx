@@ -57,16 +57,7 @@ httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
 
 ```sh
 # 6. 如果仍想把 secret 加载到当前 shell，也可以使用 load
-eval $(httpx load jira.xxxqh.net \
-  --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx)
-```
-
-```sh
-# 6.1 如果 TOML 在子目录，例如 httpx/a/b/jira.xxxqh.net.toml
-# load 会额外导出：
-# jira_xxxqh_net_config=/Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx/a/b/jira.xxxqh.net.toml
-# jira_xxxqh_net_a_b_config=/Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx/a/b/jira.xxxqh.net.toml
-# 如果根目录和子目录都有 jira.xxxqh.net.toml，根目录导出到 jira_xxxqh_net_config，子目录导出到 jira_xxxqh_net_a_b_config
+eval $(httpx load jira.xxxqh.net)
 ```
 
 ```sh
@@ -75,40 +66,21 @@ export jira_xxxqh_net_cookie='JSESSIONID=xxx; atlassian.xsrf.token=yyy'
 ```
 
 ```sh
-# 8. 手动导出 config 到环境变量 前缀是site名拼接 site_config
-export jira_xxxqh_net_config='/Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx/jira.xxxqh.net.toml'
-```
-
-```sh
-# 9. 预览请求，不发送
+# 8. 预览请求，不发送
 httpx inspect jira.xxxqh.net get_worklogs --reveal \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
   --param max_results=1
 ```
 
 ```sh
-# 9.1 使用子目录 groupA 下的 TOML，不需要再写 --config
-httpx inspect jira.xxxqh.net/groupA get_worklogs --reveal \
-  --param path=/rest/api/2/issue/QIUER-5185/worklog \
-  --param max_results=1
-```
-
-```sh
-# 10. 真正发送请求
+# 9. 真正发送请求
 httpx run jira.xxxqh.net get_worklogs \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
   --param max_results=1
 ```
 
 ```sh
-# 10.1 使用子目录 groupA 下的 TOML，不需要再写 --config
-httpx run jira.xxxqh.net/groupA get_worklogs \
-  --param path=/rest/api/2/issue/QIUER-5185/worklog \
-  --param max_results=1
-```
-
-```sh
-# 11. 不使用 load 的历史写法
+# 10. 不使用 load 的历史写法
 httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
   run jira.xxxqh.net get_worklogs \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
@@ -116,16 +88,16 @@ httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
 ```
 
 ```sh
-# 12. 查看站点
+# 11. 查看站点
 httpx sites
 ```
 
 ```sh
-# 13. 查看站点 actions
+# 12. 查看站点 actions
 httpx actions jira.xxxqh.net
 ```
 
 ```sh
-# 14. 查看 action 参数
+# 13. 查看 action 参数
 httpx action jira.xxxqh.net get_worklogs
 ```

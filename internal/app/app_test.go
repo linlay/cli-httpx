@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -584,18 +585,11 @@ func TestParseArgsDefaultsByCommand(t *testing.T) {
 	}
 }
 
-func TestParseArgsSupportsSiteConfigProfile(t *testing.T) {
+func TestParseArgsRejectsSiteConfigProfile(t *testing.T) {
 	t.Parallel()
 
-	req, err := parseArgs([]string{"run", "jira.xxqh.net/groupA", "list"})
-	if err != nil {
-		t.Fatalf("parseArgs failed: %v", err)
-	}
-	if req.Site != "jira.xxqh.net" {
-		t.Fatalf("unexpected site: %q", req.Site)
-	}
-	if req.ConfigProfile != "groupA" {
-		t.Fatalf("unexpected config profile: %q", req.ConfigProfile)
+	if _, err := parseArgs([]string{"run", "jira.xxqh.net/groupA", "list"}); err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected site profile to be rejected, got %v", err)
 	}
 }
 
@@ -761,21 +755,33 @@ path = "/me"
 
 func TestDefaultConfigDirUsesHomeConfigPath(t *testing.T) {
 	t.Setenv("HOME", "/root")
-	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/ignored-xdg-config")
 
 	if got := defaultConfigDir(); got != "/root/.config/httpx" {
 		t.Fatalf("unexpected default config dir: %q", got)
 	}
 }
 
+func TestConfigSearchUsesSystemConfigWithoutAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	dirs, err := configSearchDirs(defaultConfigDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(home, ".config", "httpx")}
+	if !reflect.DeepEqual(dirs, want) {
+		t.Fatalf("config directories = %#v, want %#v", dirs, want)
+	}
+}
+
 func TestAgentConfigOverlayUsesAgentSiteThenSystemFallback(t *testing.T) {
 	home := t.TempDir()
 	agentConfigHome := t.TempDir()
-	systemConfigHome := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", agentConfigHome)
 	t.Setenv(agentConfigHomeEnv, agentConfigHome)
-	t.Setenv(systemConfigHomeEnv, systemConfigHome)
 
 	writeSite := func(configHome, site, description string) string {
 		t.Helper()
@@ -790,6 +796,7 @@ func TestAgentConfigOverlayUsesAgentSiteThenSystemFallback(t *testing.T) {
 		}
 		return path
 	}
+	systemConfigHome := filepath.Join(home, ".config")
 	systemOnlyPath := writeSite(systemConfigHome, "system-only", "system")
 	writeSite(systemConfigHome, "shared", "system-shared")
 	agentSharedPath := writeSite(agentConfigHome, "shared", "agent-shared")
@@ -824,21 +831,14 @@ func TestAgentConfigOverlayUsesAgentSiteThenSystemFallback(t *testing.T) {
 	if loadedPath != agentSharedPath || cfg.Description != "agent-shared" {
 		t.Fatalf("unexpected agent-loaded config path=%q config=%#v", loadedPath, cfg)
 	}
-	exportedPath, _, err := loadedConfigExportsWithFallback(configDir, true, "shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if exportedPath != agentSharedPath {
-		t.Fatalf("load exported config path = %q, want %q", exportedPath, agentSharedPath)
-	}
 }
 
 func TestAgentConfigOverlayDoesNotFallbackAfterAgentConfigIsSelected(t *testing.T) {
+	home := t.TempDir()
 	agentConfigHome := t.TempDir()
-	systemConfigHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", agentConfigHome)
+	systemConfigHome := filepath.Join(home, ".config")
+	t.Setenv("HOME", home)
 	t.Setenv(agentConfigHomeEnv, agentConfigHome)
-	t.Setenv(systemConfigHomeEnv, systemConfigHome)
 	for _, configHome := range []string{agentConfigHome, systemConfigHome} {
 		if err := os.MkdirAll(filepath.Join(configHome, "httpx"), 0o700); err != nil {
 			t.Fatal(err)
@@ -855,18 +855,25 @@ func TestAgentConfigOverlayDoesNotFallbackAfterAgentConfigIsSelected(t *testing.
 	}
 }
 
-func TestAgentConfigOverlayHonorsXDGConfigHomeOverride(t *testing.T) {
+func TestAgentConfigOverlayIgnoresLegacyConfigEnvironment(t *testing.T) {
+	home := t.TempDir()
 	agentConfigHome := t.TempDir()
-	customConfigHome := t.TempDir()
+	legacyAgentHome := t.TempDir()
+	legacySystemHome := t.TempDir()
+	xdgConfigHome := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv(agentConfigHomeEnv, agentConfigHome)
-	t.Setenv("XDG_CONFIG_HOME", customConfigHome)
+	t.Setenv("AP_AGENT_CONFIG_HOME", legacyAgentHome)
+	t.Setenv("AP_SYSTEM_XDG_CONFIG_HOME", legacySystemHome)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
 
 	dirs, err := configSearchDirs(defaultConfigDir(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := dirs[0], filepath.Join(customConfigHome, "httpx"); got != want {
-		t.Fatalf("primary config directory = %q, want %q", got, want)
+	want := []string{filepath.Join(agentConfigHome, "httpx"), filepath.Join(home, ".config", "httpx")}
+	if !reflect.DeepEqual(dirs, want) {
+		t.Fatalf("config directories = %#v, want %#v", dirs, want)
 	}
 }
 
@@ -1333,11 +1340,13 @@ func TestRunLoadExportsShellSafeSiteScopedEnv(t *testing.T) {
 	for _, want := range []string{
 		"export jira_xxqh_net_cookie='abc'\\''123'\n",
 		"export jira_xxqh_net_auth_session='session-value'\n",
-		"export jira_xxqh_net_config='",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}
+	}
+	if strings.Contains(output, "_config=") {
+		t.Fatalf("load must not export config locations, got %q", output)
 	}
 }
 
@@ -1351,98 +1360,17 @@ func TestLoadCommandReadsDefaultSecretPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{"cookie":"from-default"}`), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
-	configDir := t.TempDir()
-
 	var stdout bytes.Buffer
 	root := newRootCommand(nil, &stdout, io.Discard, func(commandRequest) int {
 		t.Fatal("load should execute directly")
 		return ExitConfig
 	})
-	root.SetArgs([]string{"load", "jira.xxqh.net", "--config", configDir})
+	root.SetArgs([]string{"load", "jira.xxqh.net"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute load failed: %v", err)
 	}
 	output := stdout.String()
-	for _, want := range []string{
-		"export jira_xxqh_net_cookie='from-default'\n",
-		"export jira_xxqh_net_config='" + filepath.Join(configDir, "jira.xxqh.net.toml") + "'\n",
-	} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("expected output to contain %q, got %q", want, output)
-		}
-	}
-}
-
-func TestRunLoadExportsNestedConfigDirectoryAlias(t *testing.T) {
-	secretDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{"cookie":"value"}`), 0o600); err != nil {
-		t.Fatalf("write secret: %v", err)
-	}
-	configRoot := t.TempDir()
-	nestedDir := filepath.Join(configRoot, "a", "b")
-	if err := os.MkdirAll(nestedDir, 0o700); err != nil {
-		t.Fatalf("mkdir nested config dir: %v", err)
-	}
-	configPath := filepath.Join(nestedDir, "jira.xxqh.net.toml")
-	if err := os.WriteFile(configPath, []byte("version = 1\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	var stdout bytes.Buffer
-	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{
-		SecretDir: secretDir,
-		ConfigDir: configRoot,
-	})
-	if err != nil {
-		t.Fatalf("runLoad failed: %v", err)
-	}
-	output := stdout.String()
-	for _, want := range []string{
-		"export jira_xxqh_net_config='" + configPath + "'\n",
-		"export jira_xxqh_net_a_b_config='" + configPath + "'\n",
-	} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("expected output to contain %q, got %q", want, output)
-		}
-	}
-}
-
-func TestRunLoadExportsRootConfigAndNestedConfigAliases(t *testing.T) {
-	secretDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{"cookie":"value"}`), 0o600); err != nil {
-		t.Fatalf("write secret: %v", err)
-	}
-	configRoot := t.TempDir()
-	rootConfig := filepath.Join(configRoot, "jira.xxqh.net.toml")
-	if err := os.WriteFile(rootConfig, []byte("version = 1\n"), 0o600); err != nil {
-		t.Fatalf("write root config: %v", err)
-	}
-	for _, rel := range []string{"groupA", filepath.Join("a", "b")} {
-		dir := filepath.Join(configRoot, rel)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("mkdir config dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "jira.xxqh.net.toml"), []byte("version = 1\n"), 0o600); err != nil {
-			t.Fatalf("write config: %v", err)
-		}
-	}
-
-	var stdout bytes.Buffer
-	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{
-		SecretDir: secretDir,
-		ConfigDir: configRoot,
-	})
-	if err != nil {
-		t.Fatalf("runLoad failed: %v", err)
-	}
-	output := stdout.String()
-	groupAConfig := filepath.Join(configRoot, "groupA", "jira.xxqh.net.toml")
-	nestedConfig := filepath.Join(configRoot, "a", "b", "jira.xxqh.net.toml")
-	for _, want := range []string{
-		"export jira_xxqh_net_config='" + rootConfig + "'\n",
-		"export jira_xxqh_net_groupA_config='" + groupAConfig + "'\n",
-		"export jira_xxqh_net_a_b_config='" + nestedConfig + "'\n",
-	} {
+	for _, want := range []string{"export jira_xxqh_net_cookie='from-default'\n"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}
@@ -1491,50 +1419,19 @@ func TestRunLoadReportsInvalidSecretJSONClearly(t *testing.T) {
 	}
 }
 
-func TestResolveConfigPathUsesLoadedSiteConfigEnv(t *testing.T) {
-	configFile := filepath.Join(t.TempDir(), "jira.xxqh.net.toml")
-	if err := os.WriteFile(configFile, []byte("version = 1\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	t.Setenv(siteConfigEnvKey("jira.xxqh.net"), configFile)
+func TestResolveConfigPathIgnoresLegacySiteConfigEnvironment(t *testing.T) {
+	home := t.TempDir()
+	legacyConfig := filepath.Join(t.TempDir(), "jira.xxqh.net.toml")
+	t.Setenv("HOME", home)
+	t.Setenv("jira_xxqh_net_config", legacyConfig)
 
 	path, err := resolveConfigPath(defaultConfigDir(), "jira.xxqh.net")
 	if err != nil {
 		t.Fatalf("resolve config path failed: %v", err)
 	}
-	if path != configFile {
-		t.Fatalf("expected loaded config file %q, got %q", configFile, path)
-	}
-}
-
-func TestResolveConfigPathUsesLoadedProfileConfigEnv(t *testing.T) {
-	configFile := filepath.Join(t.TempDir(), "jira.xxqh.net.toml")
-	if err := os.WriteFile(configFile, []byte("version = 1\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	t.Setenv(siteConfigDirEnvKey("jira.xxqh.net", "groupA"), configFile)
-
-	path, err := resolveConfigPath(defaultConfigDir(), "jira.xxqh.net", "groupA")
-	if err != nil {
-		t.Fatalf("resolve config path failed: %v", err)
-	}
-	if path != configFile {
-		t.Fatalf("expected loaded profile config file %q, got %q", configFile, path)
-	}
-}
-
-func TestResolveConfigPathIgnoresLoadedSiteConfigWhenExplicitConfigIsSet(t *testing.T) {
-	loadedDir := t.TempDir()
-	explicitDir := t.TempDir()
-	t.Setenv(siteConfigEnvKey("jira.xxqh.net"), loadedDir)
-
-	path, err := resolveConfigPath(explicitDir, "jira.xxqh.net")
-	if err != nil {
-		t.Fatalf("resolve config path failed: %v", err)
-	}
-	want := filepath.Join(explicitDir, "jira.xxqh.net.toml")
+	want := filepath.Join(home, ".config", "httpx", "jira.xxqh.net.toml")
 	if path != want {
-		t.Fatalf("expected explicit config path %q, got %q", want, path)
+		t.Fatalf("expected fixed system config path %q, got %q", want, path)
 	}
 }
 
@@ -1544,9 +1441,9 @@ func TestRunUsesDefaultSiteConfigPath(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configRoot := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configRoot)
-	configDir := filepath.Join(configRoot, "httpx")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "httpx")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}

@@ -4,12 +4,13 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/release/build.sh <version>
+Usage: scripts/release/build.sh
 
 Example:
-  scripts/release/build.sh v0.1.0
+  scripts/release/build.sh
 
-This script builds release archives locally and does not upload anything.
+This script reads the release version from the repository VERSION file,
+builds release archives locally, and does not upload anything.
 EOF
 }
 
@@ -18,19 +19,31 @@ if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if [[ "${1:-}" == "" ]]; then
+if [[ "$#" -ne 0 ]]; then
   usage
   exit 1
 fi
 
-version="$1"
-if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-  echo "invalid version: $version" >&2
-  echo "expected a git tag style version such as v0.1.0" >&2
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+version_file="$repo_root/VERSION"
+
+if [[ ! -f "$version_file" ]]; then
+  echo "VERSION file not found: $version_file" >&2
   exit 1
 fi
 
-repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+version="$(<"$version_file")"
+if [[ -z "$version" ]]; then
+  echo "VERSION file is empty: $version_file" >&2
+  exit 1
+fi
+
+if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+  echo "invalid version: $version" >&2
+  echo "expected VERSION to contain a git tag style version such as v0.1.0" >&2
+  exit 1
+fi
+
 dist_dir="$repo_root/dist/$version"
 stage_dir="$dist_dir/.stage"
 build_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
