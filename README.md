@@ -91,7 +91,7 @@ extract_expr = ".body | {id, name, email}"
 
 ```toml
 [headers]
-Cookie = { from = "file", path = "~/.local/secret/httpx/jira.gtjaqh.net.cookie", trim = true }
+Cookie = { from = "file", path = "~/.local/secret/httpx/jira.example.com.cookie", trim = true }
 ```
 
 或使用默认 secret JSON 文件 `~/.local/secret/httpx/<site>.json`：
@@ -263,9 +263,9 @@ httpx run <site> <action>
   - 默认目录：`$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
   - 文件名：`<site>.json`
 
-在 Agent Platform 中，可设置 `HTTPX_AGENT_CONFIG_HOME` 指向当前 agent 的私有配置根目录。未传 `--config` 时，httpx 会先读取 `$HTTPX_AGENT_CONFIG_HOME/httpx/<site>.toml`，同名 site 缺失时才读取 `~/.config/httpx/<site>.toml`；`sites` 显示两侧的去重并集，重名 site 使用 agent 配置。agent 中存在同名文件但无法解析时会直接报错，不会回退系统配置。
+在 Agent Platform 中，可设置公共的 `AP_AGENT_CONFIG_HOME` 指向当前 agent 的私有配置根目录。未传 `--config` 时，httpx 会先读取 `$AP_AGENT_CONFIG_HOME/httpx/<site>.toml`，同名 site 缺失时才读取 `~/.config/httpx/<site>.toml`；`sites` 显示两侧的去重并集，重名 site 使用 agent 配置。agent 中存在同名文件但无法解析时会直接报错，不会回退系统配置。旧的 `HTTPX_AGENT_CONFIG_HOME` 不再识别。
 
-显式 `--config <dir>` 只读取该目录，不使用 agent 或系统回退。config 定位不使用 `XDG_CONFIG_HOME`，也不支持单站点 `*_CONFIG` 环境变量或 `<site>/<profile>` 写法。agent 目录仅放静态 site 配置；secret 与 state 继续使用上面的原有 XDG 目录约定，包含 token/cookie 的文件不得提交。
+显式 `--config <dir>` 只读取该目录，不使用 agent 或系统回退。config 定位不使用 `XDG_CONFIG_HOME`，也不支持旧的 `HTTPX_AGENT_CONFIG_HOME`、`AP_SYSTEM_XDG_CONFIG_HOME`、单站点 `*_CONFIG` 环境变量或 `<site>/<profile>` 写法。agent 目录仅放静态 site 配置；secret 与 state 继续使用上面的原有 XDG 目录约定，包含 token/cookie 的文件不得提交。
 - state：
   - 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
   - 文件名：`<site>.json`

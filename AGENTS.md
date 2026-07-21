@@ -220,10 +220,10 @@ httpx inspect <site> <action>
 - 如果设置了 `XDG_STATE_HOME`，目录为 `$XDG_STATE_HOME/httpx`
 - 否则目录为 `~/.local/state/httpx`
 - secret 默认目录为 `$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
-- config 系统目录固定为 `~/.config/httpx`；设置 `HTTPX_AGENT_CONFIG_HOME` 后，会优先读取 `$HTTPX_AGENT_CONFIG_HOME/httpx`
+- config 系统目录固定为 `~/.config/httpx`；设置公共的 `AP_AGENT_CONFIG_HOME` 后，会优先读取 `$AP_AGENT_CONFIG_HOME/httpx`
 - 也可以用 `--state <path>` 覆盖默认目录
 
-config 查找优先级：显式 `--config <dir>` 独占；否则先 agent 私有配置，再回退 `~/.config/httpx`。config 不读取 `XDG_CONFIG_HOME`，不兼容旧 `AP_*`、单站点 `*_CONFIG` 环境变量或 `<site>/<profile>` 语法。
+config 查找优先级：显式 `--config <dir>` 独占；否则先 agent 私有配置，再回退 `~/.config/httpx`。config 不读取 `XDG_CONFIG_HOME`，不兼容旧 `HTTPX_AGENT_CONFIG_HOME`、`AP_SYSTEM_XDG_CONFIG_HOME`、单站点 `*_CONFIG` 环境变量或 `<site>/<profile>` 语法。
 
 运行约定：
 

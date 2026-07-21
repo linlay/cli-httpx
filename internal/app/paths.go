@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	agentConfigHomeEnv = "HTTPX_AGENT_CONFIG_HOME"
+	agentConfigHomeEnv = "AP_AGENT_CONFIG_HOME"
 )
 
 func defaultConfigDir() string {

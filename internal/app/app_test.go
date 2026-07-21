@@ -855,15 +855,15 @@ func TestAgentConfigOverlayDoesNotFallbackAfterAgentConfigIsSelected(t *testing.
 	}
 }
 
-func TestAgentConfigOverlayIgnoresLegacyConfigEnvironment(t *testing.T) {
+func TestAgentConfigOverlayUsesSharedRootAndIgnoresLegacyConfigEnvironment(t *testing.T) {
 	home := t.TempDir()
 	agentConfigHome := t.TempDir()
-	legacyAgentHome := t.TempDir()
+	legacyHTTPXHome := t.TempDir()
 	legacySystemHome := t.TempDir()
 	xdgConfigHome := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv(agentConfigHomeEnv, agentConfigHome)
-	t.Setenv("AP_AGENT_CONFIG_HOME", legacyAgentHome)
+	t.Setenv("HTTPX_AGENT_CONFIG_HOME", legacyHTTPXHome)
 	t.Setenv("AP_SYSTEM_XDG_CONFIG_HOME", legacySystemHome)
 	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
 
