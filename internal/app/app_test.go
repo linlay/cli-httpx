@@ -45,6 +45,33 @@ bogus = true
 	}
 }
 
+func TestLoadConfigRejectsEnvSourceWithMigrationHint(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Fetch home"
+path = { from = "env", key = "HTTPX_PATH" }
+`)
+
+	_, err := loadConfig(configPath)
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
+	}
+	for _, want := range []string{
+		`dynamic source "env" is no longer supported`,
+		`use "secret", "file", or "shell" for credentials`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+}
+
 func TestLoadConfigRejectsLegacyProfilesWrapper(t *testing.T) {
 	t.Parallel()
 
@@ -429,7 +456,7 @@ query = { scope = "action" }
 	}
 }
 
-func TestResolverSupportsEnvFileSecretShellAndState(t *testing.T) {
+func TestResolverSupportsFileSecretShellAndState(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "token.txt")
 	if err := os.WriteFile(filePath, []byte(" file-value \n"), 0o600); err != nil {
@@ -442,8 +469,6 @@ func TestResolverSupportsEnvFileSecretShellAndState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(secretDir, "demo.json"), []byte(`{"cookie":" secret-value \n"}`), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
-	t.Setenv("HTTPX_ENV_VALUE", " env-value \n")
-
 	r := resolver{
 		state:     &profileState{Values: map[string]string{"saved.token": " state-value \n"}},
 		reveal:    true,
@@ -452,11 +477,6 @@ func TestResolverSupportsEnvFileSecretShellAndState(t *testing.T) {
 	}
 
 	cases := map[string]map[string]any{
-		"env": {
-			"from": "env",
-			"key":  "HTTPX_ENV_VALUE",
-			"trim": true,
-		},
 		"file": {
 			"from": "file",
 			"path": filePath,
@@ -481,7 +501,6 @@ func TestResolverSupportsEnvFileSecretShellAndState(t *testing.T) {
 	}
 
 	expected := map[string]string{
-		"env":    "env-value",
 		"file":   "file-value",
 		"secret": "secret-value",
 		"shell":  "shell-value",
@@ -519,6 +538,69 @@ func TestResolverReportsMissingSecretKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `secret key "missing" not found`) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCompileUsesSiteSecretAcrossRequestFields(t *testing.T) {
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "demo.json"), []byte(`{
+		"authorization": "Bearer secret-token",
+		"session": "session-cookie",
+		"query_token": "query-secret",
+		"payload": "body-secret"
+	}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.secure]
+description = "Use site secret"
+method = "POST"
+path = "/secure"
+headers = { Authorization = { from = "secret", key = "authorization" } }
+cookies = { session = { from = "secret", key = "session" } }
+query = { token = { from = "secret", key = "query_token" } }
+body = { value = { from = "secret", key = "payload" } }
+`)
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	req := commandRequest{
+		Command: commandRun,
+		Site:    "demo",
+		Action:  "secure",
+		Options: globalOptions{
+			Format:    formatJSON,
+			SecretDir: secretDir,
+			StateDir:  t.TempDir(),
+		},
+	}
+	compiled, _, _, err := NewRuntime(ioDiscard{}, ioDiscard{}).compile(
+		req,
+		cfg,
+		&profileState{Values: map[string]string{}},
+	)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	if compiled.Headers["Authorization"] != "Bearer secret-token" {
+		t.Fatalf("unexpected Authorization header: %#v", compiled.Headers)
+	}
+	if compiled.Cookies["session"] != "session-cookie" {
+		t.Fatalf("unexpected cookies: %#v", compiled.Cookies)
+	}
+	if !strings.Contains(compiled.URL, "token=query-secret") {
+		t.Fatalf("unexpected URL: %s", compiled.URL)
+	}
+	body, ok := compiled.Body.(map[string]any)
+	if !ok || body["value"] != "body-secret" {
+		t.Fatalf("unexpected body: %#v", compiled.Body)
 	}
 }
 
@@ -585,11 +667,11 @@ func TestParseArgsDefaultsByCommand(t *testing.T) {
 	}
 }
 
-func TestParseArgsRejectsSiteConfigProfile(t *testing.T) {
+func TestParseArgsRejectsSiteNameWithPathSeparator(t *testing.T) {
 	t.Parallel()
 
-	if _, err := parseArgs([]string{"run", "jira.xxqh.net/groupA", "list"}); err == nil || !errors.Is(err, ErrConfig) {
-		t.Fatalf("expected site profile to be rejected, got %v", err)
+	if _, err := parseArgs([]string{"run", "team/demo", "list"}); err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected site name with path separator to be rejected, got %v", err)
 	}
 }
 
@@ -755,7 +837,6 @@ path = "/me"
 
 func TestDefaultConfigDirUsesHomeConfigPath(t *testing.T) {
 	t.Setenv("HOME", "/root")
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/ignored-xdg-config")
 
 	if got := defaultConfigDir(); got != "/root/.config/httpx" {
 		t.Fatalf("unexpected default config dir: %q", got)
@@ -765,7 +846,6 @@ func TestDefaultConfigDirUsesHomeConfigPath(t *testing.T) {
 func TestConfigSearchUsesSystemConfigWithoutAgent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	dirs, err := configSearchDirs(defaultConfigDir(), true)
 	if err != nil {
@@ -852,28 +932,6 @@ func TestAgentConfigOverlayDoesNotFallbackAfterAgentConfigIsSelected(t *testing.
 	}
 	if _, _, err := loadSiteConfigWithFallback(defaultConfigDir(), true, "shared"); err == nil || !strings.Contains(err.Error(), filepath.Join(agentConfigHome, "httpx", "shared.toml")) {
 		t.Fatalf("expected agent config parse error, got %v", err)
-	}
-}
-
-func TestAgentConfigOverlayUsesSharedRootAndIgnoresLegacyConfigEnvironment(t *testing.T) {
-	home := t.TempDir()
-	agentConfigHome := t.TempDir()
-	legacyHTTPXHome := t.TempDir()
-	legacySystemHome := t.TempDir()
-	xdgConfigHome := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv(agentConfigHomeEnv, agentConfigHome)
-	t.Setenv("HTTPX_AGENT_CONFIG_HOME", legacyHTTPXHome)
-	t.Setenv("AP_SYSTEM_XDG_CONFIG_HOME", legacySystemHome)
-	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
-
-	dirs, err := configSearchDirs(defaultConfigDir(), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{filepath.Join(agentConfigHome, "httpx"), filepath.Join(home, ".config", "httpx")}
-	if !reflect.DeepEqual(dirs, want) {
-		t.Fatalf("config directories = %#v, want %#v", dirs, want)
 	}
 }
 
@@ -1116,13 +1174,12 @@ proxy = "http://127.0.0.1:8002"
 func TestCompileSupportsDynamicProxySource(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	t.Cleanup(server.Close)
-	t.Setenv("HTTPX_PROXY", "http://127.0.0.1:8001")
 
 	configPath := writeConfig(t, fmt.Sprintf(`
 version = 1
 description = "Demo site"
 base_url = %q
-proxy = { from = "env", key = "HTTPX_PROXY" }
+proxy = { from = "param", key = "proxy" }
 
 [actions.default]
 description = "Default path"
@@ -1141,6 +1198,9 @@ path = "/default"
 		Options: globalOptions{
 			StateDir: t.TempDir(),
 			Format:   formatJSON,
+			Params: map[string]string{
+				"proxy": "http://127.0.0.1:8001",
+			},
 		},
 	}
 
@@ -1246,16 +1306,12 @@ form = { data = { user = "alice", secret = "secret", kind = "100", mode = "2" } 
 	}
 }
 
-func TestResolverReportsMissingEnvAndShellTimeout(t *testing.T) {
+func TestResolverReportsMissingParamAndShellTimeout(t *testing.T) {
 	t.Parallel()
 
 	r := resolver{
 		state:  &profileState{Values: map[string]string{}},
 		reveal: true,
-	}
-
-	if _, err := r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "HTTPX_MISSING_ENV"}); err == nil || !errors.Is(err, ErrExecution) {
-		t.Fatalf("expected missing env execution error, got %v", err)
 	}
 
 	if _, err := r.resolveAny(context.Background(), map[string]any{"from": "param", "key": "missing"}); err == nil || !errors.Is(err, ErrExecution) {
@@ -1269,169 +1325,6 @@ func TestResolverReportsMissingEnvAndShellTimeout(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, ErrExecution) {
 		t.Fatalf("expected shell timeout execution error, got %v", err)
-	}
-}
-
-func TestResolverPrefersSiteScopedEnvWithUnderscoreKey(t *testing.T) {
-	siteEnv := secretEnvKey("jira.xxqh.net", "cookie")
-	t.Setenv(siteEnv, "site-cookie")
-	t.Setenv("cookie", "plain-cookie")
-
-	r := resolver{
-		state:  &profileState{Values: map[string]string{}},
-		reveal: true,
-		site:   "jira.xxqh.net",
-	}
-	value, err := r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "cookie"})
-	if err != nil {
-		t.Fatalf("resolve failed: %v", err)
-	}
-	if value != "site-cookie" {
-		t.Fatalf("expected site-scoped env value, got %#v", value)
-	}
-}
-
-func TestResolverFallsBackToPlainEnvAndHintsLoad(t *testing.T) {
-	t.Setenv("fallback_cookie", "plain-cookie")
-
-	r := resolver{
-		state:  &profileState{Values: map[string]string{}},
-		reveal: true,
-		site:   "jira.xxqh.net",
-	}
-	value, err := r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "fallback_cookie"})
-	if err != nil {
-		t.Fatalf("resolve fallback failed: %v", err)
-	}
-	if value != "plain-cookie" {
-		t.Fatalf("expected plain env fallback, got %#v", value)
-	}
-
-	_, err = r.resolveAny(context.Background(), map[string]any{"from": "env", "key": "missing_cookie"})
-	if err == nil || !errors.Is(err, ErrExecution) {
-		t.Fatalf("expected missing env execution error, got %v", err)
-	}
-	for _, want := range []string{
-		`env var "jira_xxqh_net_missing_cookie" not set`,
-		`tried "jira_xxqh_net_missing_cookie", "missing_cookie"`,
-		`hint: run 'eval $(httpx load jira.xxqh.net)'`,
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("expected error to contain %q, got %v", want, err)
-		}
-	}
-}
-
-func TestRunLoadExportsShellSafeSiteScopedEnv(t *testing.T) {
-	secretDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{
-		"cookie": "abc'123",
-		"auth.session": "session-value"
-	}`), 0o600); err != nil {
-		t.Fatalf("write secret: %v", err)
-	}
-
-	var stdout bytes.Buffer
-	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{SecretDir: secretDir})
-	if err != nil {
-		t.Fatalf("runLoad failed: %v", err)
-	}
-	output := stdout.String()
-	for _, want := range []string{
-		"export jira_xxqh_net_cookie='abc'\\''123'\n",
-		"export jira_xxqh_net_auth_session='session-value'\n",
-	} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("expected output to contain %q, got %q", want, output)
-		}
-	}
-	if strings.Contains(output, "_config=") {
-		t.Fatalf("load must not export config locations, got %q", output)
-	}
-}
-
-func TestLoadCommandReadsDefaultSecretPath(t *testing.T) {
-	dataHome := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", dataHome)
-	secretDir := filepath.Join(dataHome, "secret", "httpx")
-	if err := os.MkdirAll(secretDir, 0o700); err != nil {
-		t.Fatalf("mkdir secret dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`{"cookie":"from-default"}`), 0o600); err != nil {
-		t.Fatalf("write secret: %v", err)
-	}
-	var stdout bytes.Buffer
-	root := newRootCommand(nil, &stdout, io.Discard, func(commandRequest) int {
-		t.Fatal("load should execute directly")
-		return ExitConfig
-	})
-	root.SetArgs([]string{"load", "jira.xxqh.net"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("execute load failed: %v", err)
-	}
-	output := stdout.String()
-	for _, want := range []string{"export jira_xxqh_net_cookie='from-default'\n"} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("expected output to contain %q, got %q", want, output)
-		}
-	}
-}
-
-func TestRunLoadReportsMissingDefaultSecretPathClearly(t *testing.T) {
-	dataHome := t.TempDir()
-	secretDir := filepath.Join(dataHome, "secret", "httpx")
-
-	var stdout bytes.Buffer
-	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{SecretDir: secretDir})
-	if err == nil || !errors.Is(err, ErrConfig) {
-		t.Fatalf("expected config error, got %v", err)
-	}
-	for _, want := range []string{
-		`secret file not found at`,
-		filepath.Join(secretDir, "jira.xxqh.net.json"),
-		`mkdir -p`,
-		`expected JSON object like {"cookie":"..."}`,
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("expected error to contain %q, got %v", want, err)
-		}
-	}
-}
-
-func TestRunLoadReportsInvalidSecretJSONClearly(t *testing.T) {
-	secretDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(secretDir, "jira.xxqh.net.json"), []byte(`[`), 0o600); err != nil {
-		t.Fatalf("write secret: %v", err)
-	}
-
-	var stdout bytes.Buffer
-	err := runLoad(&stdout, "jira.xxqh.net", globalOptions{SecretDir: secretDir})
-	if err == nil || !errors.Is(err, ErrConfig) {
-		t.Fatalf("expected config error, got %v", err)
-	}
-	for _, want := range []string{
-		`invalid secret JSON at`,
-		`expected a JSON object like {"cookie":"..."}`,
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("expected error to contain %q, got %v", want, err)
-		}
-	}
-}
-
-func TestResolveConfigPathIgnoresLegacySiteConfigEnvironment(t *testing.T) {
-	home := t.TempDir()
-	legacyConfig := filepath.Join(t.TempDir(), "jira.xxqh.net.toml")
-	t.Setenv("HOME", home)
-	t.Setenv("jira_xxqh_net_config", legacyConfig)
-
-	path, err := resolveConfigPath(defaultConfigDir(), "jira.xxqh.net")
-	if err != nil {
-		t.Fatalf("resolve config path failed: %v", err)
-	}
-	want := filepath.Join(home, ".config", "httpx", "jira.xxqh.net.toml")
-	if path != want {
-		t.Fatalf("expected fixed system config path %q, got %q", want, path)
 	}
 }
 
@@ -1763,8 +1656,6 @@ extract_expr = ".body.ok"
 }
 
 func TestInspectRedactsDynamicValues(t *testing.T) {
-	t.Setenv("HTTPX_SECRET", "secret-token")
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	t.Cleanup(server.Close)
 
@@ -1778,9 +1669,9 @@ description = "Secret request"
 method = "POST"
 path = "/secret"
 proxy = "http://alice:secret@proxy.example:8001"
-headers = { Authorization = { from = "env", key = "HTTPX_SECRET" } }
-query = { token = { from = "env", key = "HTTPX_SECRET" } }
-body = { nested = { from = "env", key = "HTTPX_SECRET" } }
+headers = { Authorization = { from = "secret", key = "authorization" } }
+query = { token = { from = "secret", key = "token" } }
+body = { nested = { from = "secret", key = "payload" } }
 `, server.URL))
 
 	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "secret"})
@@ -2753,6 +2644,9 @@ func TestMainHelpUsesCobraCommandTree(t *testing.T) {
 	if !strings.Contains(stdout, "Available Commands:") || !strings.Contains(stdout, "run") || !strings.Contains(stdout, "version") {
 		t.Fatalf("unexpected help output: %q", stdout)
 	}
+	if strings.Contains(stdout, "\n  load ") {
+		t.Fatalf("load command must not be listed: %q", stdout)
+	}
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %q", stderr)
 	}
@@ -2783,6 +2677,19 @@ func TestMainUnknownCommandReturnsConfigExit(t *testing.T) {
 		t.Fatalf("unexpected stdout: %q", stdout)
 	}
 	if !strings.Contains(stderr, `unknown command "nope" for "httpx"`) {
+		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestMainLoadCommandIsUnavailable(t *testing.T) {
+	stdout, stderr, exitCode := runMain(t, []string{"load", "demo"})
+	if exitCode != ExitConfig {
+		t.Fatalf("expected config exit code, got %d", exitCode)
+	}
+	if stdout != "" {
+		t.Fatalf("unexpected stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, `unknown command "load" for "httpx"`) {
 		t.Fatalf("unexpected stderr: %q", stderr)
 	}
 }

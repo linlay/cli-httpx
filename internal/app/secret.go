@@ -3,12 +3,9 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/spf13/cobra"
 )
 
 type siteSecret struct {
@@ -43,49 +40,6 @@ func secretPath(dir, site string) string {
 	return filepath.Join(dir, site+".json")
 }
 
-func newLoadCommand(options *cliOptions) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "load <site>",
-		Short: "Load site secrets as environment variables for use with from=env",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			site := args[0]
-			if err := validateSiteName(site); err != nil {
-				return err
-			}
-			return runLoad(cmd.OutOrStdout(), site, options.snapshot())
-		},
-	}
-
-	return cmd
-}
-
-func runLoad(stdout io.Writer, site string, opts globalOptions) error {
-	content, path, err := findSecretFile(opts.SecretDir, site)
-	if err != nil {
-		return err
-	}
-
-	var data map[string]any
-	if err := json.Unmarshal(content, &data); err != nil {
-		return fmt.Errorf("%w: invalid secret JSON at %q: %v; expected a JSON object like {\"cookie\":\"...\"}", ErrConfig, path, err)
-	}
-	if data == nil {
-		return fmt.Errorf("%w: invalid secret JSON at %q: expected a JSON object like {\"cookie\":\"...\"}", ErrConfig, path)
-	}
-
-	prefix := site
-	for key, value := range data {
-		envKey := secretEnvKey(prefix, key)
-		envValue, err := stringifyEnvValue(value)
-		if err != nil {
-			return fmt.Errorf("%w: secret key %q: %v", ErrExecution, key, err)
-		}
-		fmt.Fprintf(stdout, "export %s=%s\n", envKey, shellQuote(envValue))
-	}
-	return nil
-}
-
 func findSecretFile(dir, site string) ([]byte, string, error) {
 	path := filepath.Join(dir, site+".json")
 	content, err := os.ReadFile(path)
@@ -117,30 +71,4 @@ func loadSecretKey(dir, site, key string) (any, error) {
 		return nil, fmt.Errorf("%w: secret key %q not found in %q", ErrExecution, key, path)
 	}
 	return value, nil
-}
-
-func stringifyEnvValue(value any) (string, error) {
-	switch v := value.(type) {
-	case string:
-		return v, nil
-	case float64:
-		return fmt.Sprintf("%v", v), nil
-	case bool:
-		return fmt.Sprintf("%v", v), nil
-	default:
-		data, err := json.Marshal(v)
-		if err != nil {
-			return "", err
-		}
-		return string(data), nil
-	}
-}
-
-func shellQuote(s string) string {
-	s = strings.ReplaceAll(s, "'", "'\\''")
-	return "'" + s + "'"
-}
-
-func secretEnvKey(site, key string) string {
-	return strings.ReplaceAll(site+"."+key, ".", "_")
 }

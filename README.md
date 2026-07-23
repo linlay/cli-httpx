@@ -87,7 +87,7 @@ extract_expr = ".body | {id, name, email}"
 
 如果你用 `from = "file"` 读取其他静态 secret，推荐放在 `~/.local/secret/httpx/`；内建登录也默认使用这套目录约定。
 
-如果不想把 secret 先 `export` 到环境变量，可以直接在配置里读取文件或站点 secret JSON：
+静态凭证应直接通过配置读取文件或站点 secret JSON，不需要导出到环境变量：
 
 ```toml
 [headers]
@@ -106,6 +106,30 @@ Cookie = { from = "file", path = "~/.local/secret/httpx/jira.example.com.cookie"
 [headers]
 Cookie = { from = "secret", key = "cookie", trim = true }
 ```
+
+旧配置如果仍使用：
+
+```toml
+[headers]
+Authorization = { from = "env", key = "HTTPX_AUTHORIZATION" }
+```
+
+应把凭证放进 `<site>.json`：
+
+```json
+{
+  "authorization": "Bearer ..."
+}
+```
+
+然后改为：
+
+```toml
+[headers]
+Authorization = { from = "secret", key = "authorization", trim = true }
+```
+
+`httpx` 不再支持 `from = "env"`，也不再提供把每个站点凭证展开成环境变量的命令。CI 或容器环境应挂载 `<site>.json` 到 `$XDG_DATA_HOME/secret/httpx/`，或使用 `from = "file"` 读取平台挂载的 secret 文件；密码管理器可通过 `from = "shell"` 在请求时动态读取。
 
 实际站点的 site 配置更适合放在用户本地配置目录：
 
@@ -263,9 +287,9 @@ httpx run <site> <action>
   - 默认目录：`$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
   - 文件名：`<site>.json`
 
-在 Agent Platform 中，可设置公共的 `AP_AGENT_CONFIG_HOME` 指向当前 agent 的私有配置根目录。未传 `--config` 时，httpx 会先读取 `$AP_AGENT_CONFIG_HOME/httpx/<site>.toml`，同名 site 缺失时才读取 `~/.config/httpx/<site>.toml`；`sites` 显示两侧的去重并集，重名 site 使用 agent 配置。agent 中存在同名文件但无法解析时会直接报错，不会回退系统配置。旧的 `HTTPX_AGENT_CONFIG_HOME` 不再识别。
+在 Agent Platform 中，可设置公共的 `AP_AGENT_CONFIG_HOME` 指向当前 agent 的私有配置根目录。未传 `--config` 时，httpx 会先读取 `$AP_AGENT_CONFIG_HOME/httpx/<site>.toml`，同名 site 缺失时才读取 `~/.config/httpx/<site>.toml`；`sites` 显示两侧的去重并集，重名 site 使用 agent 配置。agent 中存在同名文件但无法解析时会直接报错，不会回退系统配置。
 
-显式 `--config <dir>` 只读取该目录，不使用 agent 或系统回退。config 定位不使用 `XDG_CONFIG_HOME`，也不支持旧的 `HTTPX_AGENT_CONFIG_HOME`、`AP_SYSTEM_XDG_CONFIG_HOME`、单站点 `*_CONFIG` 环境变量或 `<site>/<profile>` 写法。agent 目录仅放静态 site 配置；secret 与 state 继续使用上面的原有 XDG 目录约定，包含 token/cookie 的文件不得提交。
+显式 `--config <dir>` 只读取该目录，不使用 agent 或系统回退。agent 目录仅放静态 site 配置；secret 与 state 继续使用上面的目录约定，包含 token/cookie 的文件不得提交。
 - state：
   - 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
   - 文件名：`<site>.json`
@@ -432,7 +456,7 @@ curl -I https://cligrep.com/cli-releases/httpx/latest/httpx_linux_amd64.tar.gz
 - 内建登录 secret 文件建议放到 `~/.local/secret/httpx/<site>.json`
 - 不要把 `state` 目录放进静态 secret 目录里
 
-state 文件是本地明文 JSON。更完整的状态模型、写回时机和安全约束见 [CLAUDE.md](./CLAUDE.md)。
+state 文件是本地明文 JSON。更完整的状态模型、写回时机和安全约束见 [AGENTS.md](./AGENTS.md)。
 
 ### `version = 1` 是发布版本号吗？
 
@@ -440,4 +464,4 @@ state 文件是本地明文 JSON。更完整的状态模型、写回时机和安
 
 ### 看哪里了解内部设计？
 
-设计、状态模型、cookie 复用、输出模型、发布约定和仓库职责边界见 [CLAUDE.md](./CLAUDE.md)。
+设计、状态模型、cookie 复用、输出模型、发布约定和仓库职责边界见 [AGENTS.md](./AGENTS.md)。

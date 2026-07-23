@@ -50,37 +50,21 @@ params = [
 ```
 
 ```sh
-# 5. 验证配置；secret 会在 run/inspect 时从默认路径读取，不需要 export 到 env
+# 5. 查看 action 输入契约；run 会从默认路径读取 secret
 httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
   action jira.xxxqh.net get_worklogs
 ```
 
 ```sh
-# 6. 如果仍想把 secret 加载到当前 shell，也可以使用 load
-eval $(httpx load jira.xxxqh.net)
-```
-
-```sh
-# 7. 手动导出 cookie 到环境变量 前缀是site名拼接 site_cookie
-export jira_xxxqh_net_cookie='JSESSIONID=xxx; atlassian.xsrf.token=yyy'
-```
-
-```sh
-# 8. 预览请求，不发送
-httpx inspect jira.xxxqh.net get_worklogs --reveal \
+# 6. 预览请求，不发送；敏感动态值默认脱敏
+httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
+  inspect jira.xxxqh.net get_worklogs \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
   --param max_results=1
 ```
 
 ```sh
-# 9. 真正发送请求
-httpx run jira.xxxqh.net get_worklogs \
-  --param path=/rest/api/2/issue/QIUER-5185/worklog \
-  --param max_results=1
-```
-
-```sh
-# 10. 不使用 load 的历史写法
+# 7. 真正发送请求
 httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
   run jira.xxxqh.net get_worklogs \
   --param path=/rest/api/2/issue/QIUER-5185/worklog \
@@ -88,16 +72,18 @@ httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
 ```
 
 ```sh
-# 11. 查看站点
-httpx sites
+# 8. 查看站点
+httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx sites
 ```
 
 ```sh
-# 12. 查看站点 actions
-httpx actions jira.xxxqh.net
+# 9. 查看站点 actions
+httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
+  actions jira.xxxqh.net
 ```
 
 ```sh
-# 13. 查看 action 参数
-httpx action jira.xxxqh.net get_worklogs
+# 10. 查看 action 参数
+httpx --config /Users/joe/xxx/linlay/zenmind-env/skills-market/jira/httpx \
+  action jira.xxxqh.net get_worklogs
 ```

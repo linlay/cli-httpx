@@ -189,8 +189,8 @@ httpx inspect <site> <action>
 
 当前支持这些动态值来源：
 
-- `env`
 - `file`
+- `secret`
 - `shell`
 - `state`
 - `param`
@@ -198,8 +198,8 @@ httpx inspect <site> <action>
 
 用途简述：
 
-- `env`：适合账号、token 等外部注入值
 - `file`：适合读取本地密钥或临时凭证
+- `secret`：适合从默认 `<site>.json` 读取静态账号、token、cookie 等凭证
 - `shell`：适合从密码管理器或命令输出动态取值
 - `state`：适合复用上一次登录或请求保存的状态
 - `param`：适合命令行传入的运行时参数
@@ -207,6 +207,8 @@ httpx inspect <site> <action>
 
 风险和约束：
 
+- 不支持 `from = "env"`，也不把站点凭证展开为环境变量
+- CI 或容器环境应挂载 `<site>.json` 或独立 secret 文件，并使用 `secret` / `file`
 - `shell` 依赖本机环境，超时或命令失败会导致执行失败
 - `state` 依赖本地 state 文件，适合会话复用，不适合作为跨环境共享机制
 - `param` 缺失时会失败，除非配置了默认值
@@ -223,7 +225,7 @@ httpx inspect <site> <action>
 - config 系统目录固定为 `~/.config/httpx`；设置公共的 `AP_AGENT_CONFIG_HOME` 后，会优先读取 `$AP_AGENT_CONFIG_HOME/httpx`
 - 也可以用 `--state <path>` 覆盖默认目录
 
-config 查找优先级：显式 `--config <dir>` 独占；否则先 agent 私有配置，再回退 `~/.config/httpx`。config 不读取 `XDG_CONFIG_HOME`，不兼容旧 `HTTPX_AGENT_CONFIG_HOME`、`AP_SYSTEM_XDG_CONFIG_HOME`、单站点 `*_CONFIG` 环境变量或 `<site>/<profile>` 语法。
+config 查找优先级：显式 `--config <dir>` 独占；否则先 agent 私有配置，再回退 `~/.config/httpx`。
 
 运行约定：
 

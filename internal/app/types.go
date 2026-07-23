@@ -20,7 +20,6 @@ const (
 	commandAction  commandKind = "action"
 	commandActions commandKind = "actions"
 	commandState   commandKind = "state"
-	commandLoad    commandKind = "load"
 )
 
 type globalOptions struct {

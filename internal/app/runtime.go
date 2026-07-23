@@ -73,8 +73,6 @@ func (rt *Runtime) Run(req commandRequest) int {
 		return rt.runListActions(req)
 	case commandState:
 		return rt.runShowState(req)
-	case commandLoad:
-		return rt.runLoadCommand(req)
 	default:
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", fmt.Sprintf("unsupported command %q", req.Command))
 	}
@@ -781,13 +779,6 @@ func (rt *Runtime) writeFailure(req commandRequest, headers map[string][]string,
 		return ExitExecution
 	}
 	return exitCode
-}
-
-func (rt *Runtime) runLoadCommand(req commandRequest) int {
-	if err := runLoad(rt.stdout, req.Site, req.Options); err != nil {
-		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
-	}
-	return ExitSuccess
 }
 
 func responseContext(status int, headers map[string][]string, body any, rawBody []byte) map[string]any {
