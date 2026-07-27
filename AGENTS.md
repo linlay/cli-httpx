@@ -50,6 +50,7 @@ CLI 框架约定：
 - `version`
 - `description`
 - `base_url`
+- `state_scope`
 - `login`
 - `timeout`
 - `retries`
@@ -90,6 +91,15 @@ CLI 框架约定：
 - `--extract` 只参与 extractor 执行
 - jq extractor 通过 `.extract` 读取该输入
 - regex extractor 通过 `{{extract.key}}` 模板占位符读取该输入
+
+存储作用域约定：
+
+- `scope` 只接受 `global` 和 `chat`
+- 缺省 scope 固定为 `global`，不支持 `auto` 或 `system`
+- 动态值用 `from = "secret" / "state"` 表示存储类型，用 `scope` 表示作用域
+- site 顶层 `state_scope` 控制 cookie、`save` 和 `last_login` 的运行时 state 目标
+- `login.secret_scope` 控制内建登录的 username/password 来源
+- 所有新增 scope 字段缺省均为 `global`
 
 ## 命令语义
 
@@ -196,6 +206,17 @@ httpx inspect <site> <action>
 - `param`
 - `literal`
 
+`secret` 和 `state` 额外支持：
+
+```toml
+{ from = "secret", scope = "global", key = "authorization" }
+{ from = "secret", scope = "chat", key = "authorization" }
+{ from = "state", scope = "global", key = "auth.authorization" }
+{ from = "state", scope = "chat", key = "auth.authorization" }
+```
+
+不使用 `from = "chat"`：Chat 是作用域，不是存储类型。
+
 用途简述：
 
 - `file`：适合读取本地密钥或临时凭证
@@ -217,13 +238,25 @@ httpx inspect <site> <action>
 
 登录后的 cookie 和 access token 都不保存在配置文件里，而是保存在本地 state 文件里。
 
-默认目录规则：
+Global 目录规则：
 
 - 如果设置了 `XDG_STATE_HOME`，目录为 `$XDG_STATE_HOME/httpx`
 - 否则目录为 `~/.local/state/httpx`
-- secret 默认目录为 `$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
+- secret 优先为 `$XDG_SECRET_HOME/httpx`
+- 未设置 `XDG_SECRET_HOME` 时兼容 `$XDG_DATA_HOME/secret/httpx`
+- 最后回退 `~/.local/secret/httpx`
 - config 系统目录固定为 `~/.config/httpx`；设置公共的 `AP_AGENT_CONFIG_HOME` 后，会优先读取 `$AP_AGENT_CONFIG_HOME/httpx`
-- 也可以用 `--state <path>` 覆盖默认目录
+- `--state <path>` 只覆盖 global state 目录
+
+Chat 目录规则：
+
+- Agent Platform 注入 `AP_CHAT_DIR` 指向当前 Chat 根目录
+- Chat secret 固定为 `$AP_CHAT_DIR/.secret/httpx`
+- Chat state 固定为 `$AP_CHAT_DIR/.state/httpx`
+- `AP_CHAT_DIR` 必须是当前执行环境内已存在、可访问的绝对非根目录
+- `scope = "chat"` 缺少合法 `AP_CHAT_DIR` 时失败，不回退 global
+- Host、Container、Agent terminal 可以注入不同的可访问路径，但必须指向同一个逻辑 Chat
+- `AP_CHAT_DIR` 是平台保留变量，不应允许 agent/skill runtime env 覆盖
 
 config 查找优先级：显式 `--config <dir>` 独占；否则先 agent 私有配置，再回退 `~/.config/httpx`。
 
@@ -232,14 +265,17 @@ config 查找优先级：显式 `--config <dir>` 独占；否则先 agent 私有
 - 不建议把 `--state` 指到 `/tmp/...`，因为这类目录常常跟着沙箱或容器生命周期一起销毁
 - 推荐优先使用用户级持久目录：`~/.local/state/httpx`
 - 如果需要显式路径，推荐 `--state "$HOME/.local/state/httpx"`
-- 内建登录 secret 文件推荐放在 `~/.local/secret/httpx/<site>.json`
-- `from = "file"` 读取的是任意文件路径；额外静态 secret 也推荐放在 `~/.local/secret/httpx/`
+- global 内建登录 secret 推荐放在 `$XDG_SECRET_HOME/httpx/<site>.json`
+- Chat 内建登录 secret 放在 `$AP_CHAT_DIR/.secret/httpx/<site>.json`
+- `from = "file"` 读取的是任意文件路径；额外 global 静态 secret 推荐放在 `$XDG_SECRET_HOME/httpx/`
 - 不建议把 mutable runtime state 和静态 secret 文件混放
-- 在容器里能否持久化，关键取决于 `HOME` 或 `--state` 是否绑定到宿主机目录或持久卷，而不是路径名本身
+- 在容器里能否持久化，关键取决于 global 目录或 `AP_CHAT_DIR` 是否绑定到宿主机目录或持久卷，而不是路径名本身
 
-每个 site 对应一个 state 文件：
+每个 scope/site 对应一个 state 文件：
 
 - 文件名：`<site>.json`
+- global：`$XDG_STATE_HOME/httpx/<site>.json`
+- Chat：`$AP_CHAT_DIR/.state/httpx/<site>.json`
 
 state 文件当前结构：
 
@@ -276,10 +312,24 @@ state 文件当前结构：
 - 如果本次命令是 `login`，还会更新 `state.LastLogin`
 - 之后统一把 state 写回 `<site>.json`
 
+写入目标由 site 顶层 `state_scope` 决定；缺省为 `global`。内建登录凭证来源由
+`login.secret_scope` 决定；缺省为 `global`。
+
+并发与持久化约定：
+
+- 每个 scope/site 使用 `<site>.json.lock`
+- 锁覆盖完整的 `load -> compile -> execute -> save`
+- 同一 scope/site 串行，不同 Chat 或不同 site 可以并行
+- state 先写入同目录临时文件，完成文件同步后原子替换目标文件
+- state 目录权限设置为 `0700`
+- state 和 lock 文件权限设置为 `0600`
+- discovery 读取已有 state 时也持有文件锁
+
 实现位置：
 
 - 目录规则：`internal/app/paths.go`
 - 结构定义和读写：`internal/app/state.go`
+- 文件锁：`internal/app/state_lock*.go`
 - 写回时机：`internal/app/runtime.go`
 
 ## Cookie 机制
@@ -296,6 +346,7 @@ state 文件当前结构：
 这意味着：
 
 - 站点登录态可以跨多次 CLI 调用复用
+- `state_scope = "chat"` 时只在同一 Chat 内复用
 - 过期 cookie 不会继续用于后续请求
 - state 文件里既可能有服务器返回的 cookie，也可能有通过 `state` 显式引用的业务字段
 
@@ -333,15 +384,16 @@ CLI 有两种主要输出模式：
 - `inspect` 会默认脱敏常见敏感头和动态值
 - state 文件以 JSON 明文保存在本地
 - state 文件权限写为 `0600`
-- state 目录如果不存在，会由程序自动创建；当前实现的目录权限是 `0755`
+- state 目录如果不存在，会由程序自动创建并设置为 `0700`
+- Chat discovery 不输出包含原始 Chat ID 的绝对路径，只输出 `.state/httpx/<site>.json`
 
 需要明确的限制：
 
 - `values` 中的 token/access token 是明文保存的
 - `cookies` 中的 session cookie 也是明文保存的
 - 这些文件不应该提交到仓库
-- 共享机器或低信任环境下应显式指定安全的 `--state`
-- 更稳妥的部署约定是由启动脚本或运维预创建 state 目录，并将目录权限设置为 `0700`
+- 共享机器或低信任环境下应使用安全的 global `--state`，或由平台隔离并保护 `AP_CHAT_DIR`
+- Chat secret 可以只读挂载，Chat state 必须可写且跨同一 Chat 的多次运行持久化
 
 这次文档方案只澄清当前行为，不引入 keychain 或加密存储。
 

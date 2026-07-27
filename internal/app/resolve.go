@@ -17,10 +17,12 @@ const redactedValue = "***"
 
 type resolver struct {
 	state     *profileState
+	states    *scopedStateSet
 	reveal    bool
 	params    map[string]string
 	site      string
 	secretDir string
+	options   globalOptions
 }
 
 type sourceSpec struct {
@@ -32,6 +34,7 @@ type sourceSpec struct {
 	Trim      bool
 	Value     any
 	Default   any
+	Scope     storageScope
 }
 
 func (r resolver) resolveAny(ctx context.Context, value any) (any, error) {
@@ -108,13 +111,18 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, fmt.Errorf("%w: file source requires non-empty path", ErrConfig)
 		}
 	case "secret":
-		if err := rejectUnknownSourceKeys(input, "from", "key", "trim"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
 		if !ok || spec.Key == "" {
 			return sourceSpec{}, false, fmt.Errorf("%w: secret source requires non-empty key", ErrConfig)
 		}
+		scope, err := sourceScope(input)
+		if err != nil {
+			return sourceSpec{}, false, err
+		}
+		spec.Scope = scope
 	case "shell":
 		if err := rejectUnknownSourceKeys(input, "from", "cmd", "timeout_ms", "trim"); err != nil {
 			return sourceSpec{}, false, err
@@ -127,13 +135,18 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			spec.TimeoutMS = timeout
 		}
 	case "state":
-		if err := rejectUnknownSourceKeys(input, "from", "key", "trim"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
 		if !ok || spec.Key == "" {
 			return sourceSpec{}, false, fmt.Errorf("%w: state source requires non-empty key", ErrConfig)
 		}
+		scope, err := sourceScope(input)
+		if err != nil {
+			return sourceSpec{}, false, err
+		}
+		spec.Scope = scope
 	default:
 		if from == "env" {
 			return sourceSpec{}, false, fmt.Errorf(
@@ -153,6 +166,22 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 	return spec, true, nil
 }
 
+func sourceScope(input map[string]any) (storageScope, error) {
+	raw, ok := input["scope"]
+	if !ok {
+		return scopeGlobal, nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("%w: dynamic source scope must be a string", ErrConfig)
+	}
+	scope, err := normalizeStorageScope(value)
+	if err != nil {
+		return "", err
+	}
+	return scope, nil
+}
+
 func rejectUnknownSourceKeys(input map[string]any, allowed ...string) error {
 	allowlist := make(map[string]struct{}, len(allowed))
 	for _, key := range allowed {
@@ -167,6 +196,11 @@ func rejectUnknownSourceKeys(input map[string]any, allowed ...string) error {
 }
 
 func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, error) {
+	if spec.Scope == scopeChat && (spec.From == "secret" || spec.From == "state") {
+		if _, err := validatedChatDir(r.options.ChatDir, r.options.ChatDirSet); err != nil {
+			return nil, err
+		}
+	}
 	if !r.reveal && spec.From != "literal" {
 		if spec.From == "param" {
 			if _, ok := r.params[spec.Key]; !ok && spec.Default != nil {
@@ -209,10 +243,18 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		if strings.TrimSpace(r.site) == "" {
 			return nil, fmt.Errorf("%w: secret source requires site context", ErrConfig)
 		}
-		if strings.TrimSpace(r.secretDir) == "" {
+		options := r.options
+		if options.SecretDir == "" {
+			options.SecretDir = r.secretDir
+		}
+		dir, err := secretDirForScope(options, spec.Scope)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(dir) == "" {
 			return nil, fmt.Errorf("%w: secret source requires secret directory", ErrConfig)
 		}
-		value, err := loadSecretKey(r.secretDir, r.site, spec.Key)
+		value, err := loadSecretKeyForScope(dir, r.site, spec.Key, spec.Scope)
 		if err != nil {
 			return nil, err
 		}
@@ -239,7 +281,20 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		}
 		return maybeTrim(stdout.String(), spec.Trim), nil
 	case "state":
-		value, ok := r.state.Values[spec.Key]
+		state := r.state
+		if r.states != nil {
+			var err error
+			state, err = r.states.load(spec.Scope)
+			if err != nil {
+				return nil, err
+			}
+		} else if spec.Scope == scopeChat {
+			return nil, fmt.Errorf("%w: %s is required for chat scope", ErrConfig, chatDirEnv)
+		}
+		if state == nil {
+			return nil, fmt.Errorf("%w: state source is not configured", ErrConfig)
+		}
+		value, ok := state.Values[spec.Key]
 		if !ok {
 			return nil, fmt.Errorf("%w: state key %q not found", ErrExecution, spec.Key)
 		}

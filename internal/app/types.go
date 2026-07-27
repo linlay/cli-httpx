@@ -9,6 +9,13 @@ const (
 	formatJSON outputFormat = "json"
 )
 
+type storageScope string
+
+const (
+	scopeGlobal storageScope = "global"
+	scopeChat   storageScope = "chat"
+)
+
 type commandKind string
 
 const (
@@ -29,6 +36,8 @@ type globalOptions struct {
 	SecretDir      string
 	Timeout        time.Duration
 	StateDir       string
+	ChatDir        string
+	ChatDirSet     bool
 	Inspect        bool
 	Reveal         bool
 	Params         map[string]string

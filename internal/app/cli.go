@@ -132,11 +132,14 @@ func parseExtractInput(raw string) (map[string]any, error) {
 }
 
 func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner) *cobra.Command {
+	chatDir, chatDirSet := currentChatDir()
 	options := &cliOptions{
 		global: globalOptions{
-			ConfigDir: defaultConfigDir(),
-			SecretDir: defaultSecretDir(),
-			StateDir:  defaultStateDir(),
+			ConfigDir:  defaultConfigDir(),
+			SecretDir:  defaultSecretDir(),
+			StateDir:   defaultStateDir(),
+			ChatDir:    chatDir,
+			ChatDirSet: chatDirSet,
 		},
 	}
 
@@ -163,7 +166,7 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner
 
 	flags := root.PersistentFlags()
 	flags.Var(&configDirValue{value: &options.global.ConfigDir, set: &options.configSet}, "config", "Configuration directory")
-	flags.StringVar(&options.global.StateDir, "state", options.global.StateDir, "State directory")
+	flags.StringVar(&options.global.StateDir, "state", options.global.StateDir, "Global state directory")
 	flags.DurationVar(&options.global.Timeout, "timeout", 0, "Request timeout override")
 	flags.BoolVar(&options.global.Reveal, "reveal", false, "Reveal sensitive values in inspect output")
 	flags.BoolVar(&options.version, "version", false, "Print version information")

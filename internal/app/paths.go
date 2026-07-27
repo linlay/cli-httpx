@@ -10,6 +10,8 @@ import (
 
 const (
 	agentConfigHomeEnv = "AP_AGENT_CONFIG_HOME"
+	chatDirEnv         = "AP_CHAT_DIR"
+	secretHomeEnv      = "XDG_SECRET_HOME"
 )
 
 func defaultConfigDir() string {
@@ -21,6 +23,9 @@ func defaultConfigDir() string {
 }
 
 func defaultSecretDir() string {
+	if dir := strings.TrimSpace(os.Getenv(secretHomeEnv)); dir != "" {
+		return filepath.Join(dir, "httpx")
+	}
 	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
 		return filepath.Join(dir, "secret", "httpx")
 	}
@@ -151,4 +156,88 @@ func defaultStateDir() string {
 		return filepath.Join(".local", "state", "httpx")
 	}
 	return filepath.Join(home, ".local", "state", "httpx")
+}
+
+func currentChatDir() (string, bool) {
+	value, ok := os.LookupEnv(chatDirEnv)
+	return strings.TrimSpace(value), ok
+}
+
+func normalizeStorageScope(value string) (storageScope, error) {
+	switch storageScope(strings.ToLower(strings.TrimSpace(value))) {
+	case "", scopeGlobal:
+		return scopeGlobal, nil
+	case scopeChat:
+		return scopeChat, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported scope %q; use %q or %q", ErrConfig, value, scopeGlobal, scopeChat)
+	}
+}
+
+func stateDirForScope(options globalOptions, scope storageScope) (string, error) {
+	switch scope {
+	case scopeGlobal:
+		return options.StateDir, nil
+	case scopeChat:
+		chatDir, err := validatedChatDir(options.ChatDir, options.ChatDirSet)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(chatDir, ".state", "httpx"), nil
+	default:
+		return "", fmt.Errorf("%w: unsupported state scope %q", ErrConfig, scope)
+	}
+}
+
+func secretDirForScope(options globalOptions, scope storageScope) (string, error) {
+	switch scope {
+	case scopeGlobal:
+		return options.SecretDir, nil
+	case scopeChat:
+		chatDir, err := validatedChatDir(options.ChatDir, options.ChatDirSet)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(chatDir, ".secret", "httpx"), nil
+	default:
+		return "", fmt.Errorf("%w: unsupported secret scope %q", ErrConfig, scope)
+	}
+}
+
+func validatedChatDir(value string, set bool) (string, error) {
+	if !set || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%w: %s is required for chat scope", ErrConfig, chatDirEnv)
+	}
+	cleaned := filepath.Clean(value)
+	if !filepath.IsAbs(cleaned) || isFilesystemRoot(cleaned) {
+		return "", fmt.Errorf("%w: %s must be an absolute non-root directory", ErrConfig, chatDirEnv)
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s must reference an existing accessible directory", ErrConfig, chatDirEnv)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%w: %s must reference a directory", ErrConfig, chatDirEnv)
+	}
+	return cleaned, nil
+}
+
+func isFilesystemRoot(path string) bool {
+	volume := filepath.VolumeName(path)
+	root := filepath.Clean(volume + string(filepath.Separator))
+	return filepath.Clean(path) == root
+}
+
+func displayStatePath(dir, site string, scope storageScope) string {
+	if scope == scopeChat {
+		return filepath.Join(".state", "httpx", site+".json")
+	}
+	return statePath(dir, site)
+}
+
+func displaySecretPath(dir, site string, scope storageScope) string {
+	if scope == scopeChat {
+		return filepath.Join(".secret", "httpx", site+".json")
+	}
+	return secretPath(dir, site)
 }

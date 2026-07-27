@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +17,59 @@ type profileState struct {
 	Values    map[string]string `json:"values"`
 	Cookies   []storedCookie    `json:"cookies"`
 	LastLogin string            `json:"last_login,omitempty"`
+}
+
+type scopedStateSet struct {
+	options globalOptions
+	site    string
+	states  map[storageScope]*profileState
+}
+
+func newScopedStateSet(options globalOptions, site string) *scopedStateSet {
+	return &scopedStateSet{
+		options: options,
+		site:    site,
+		states:  map[storageScope]*profileState{},
+	}
+}
+
+func (s *scopedStateSet) dir(scope storageScope) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("%w: state store is not configured", ErrConfig)
+	}
+	return stateDirForScope(s.options, scope)
+}
+
+func (s *scopedStateSet) set(scope storageScope, state *profileState) {
+	if s == nil {
+		return
+	}
+	s.states[scope] = state
+}
+
+func (s *scopedStateSet) load(scope storageScope) (*profileState, error) {
+	if s == nil {
+		return nil, fmt.Errorf("%w: state store is not configured", ErrConfig)
+	}
+	if state, ok := s.states[scope]; ok {
+		return state, nil
+	}
+	dir, err := s.dir(scope)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := acquireStateLock(dir, s.site)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
+
+	state, err := loadState(dir, s.site)
+	if err != nil {
+		return nil, err
+	}
+	s.states[scope] = state
+	return state, nil
 }
 
 type storedCookie struct {
@@ -165,7 +219,7 @@ func loadState(dir, profileName string) (*profileState, error) {
 		if os.IsNotExist(err) {
 			return &profileState{Values: map[string]string{}}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read state file: %v", pathErrorCause(err))
 	}
 
 	var state profileState
@@ -182,14 +236,48 @@ func saveState(dir, profileName string, state *profileState) error {
 	if state.Values == nil {
 		state.Values = map[string]string{}
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensureStateDirectory(dir); err != nil {
 		return err
 	}
 	content, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(dir, profileName), content, 0o600)
+	content = append(content, '\n')
+
+	temp, err := os.CreateTemp(dir, "."+profileName+".json.tmp-")
+	if err != nil {
+		return fmt.Errorf("create temporary state file: %v", pathErrorCause(err))
+	}
+	tempPath := temp.Name()
+	removeTemp := true
+	defer func() {
+		_ = temp.Close()
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := temp.Chmod(0o600); err != nil {
+		return fmt.Errorf("set temporary state permissions: %v", pathErrorCause(err))
+	}
+	if _, err := temp.Write(content); err != nil {
+		return fmt.Errorf("write temporary state file: %v", pathErrorCause(err))
+	}
+	if err := temp.Sync(); err != nil {
+		return fmt.Errorf("sync temporary state file: %v", pathErrorCause(err))
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close temporary state file: %v", pathErrorCause(err))
+	}
+	if err := os.Rename(tempPath, statePath(dir, profileName)); err != nil {
+		return fmt.Errorf("replace state file: %v", pathErrorCause(err))
+	}
+	removeTemp = false
+	if err := syncStateDirectory(dir); err != nil {
+		return fmt.Errorf("sync state directory: %v", pathErrorCause(err))
+	}
+	return nil
 }
 
 func statePath(dir, profileName string) string {

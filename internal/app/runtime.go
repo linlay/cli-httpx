@@ -89,16 +89,32 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
 
-	state, err := loadState(req.Options.StateDir, req.Site)
+	stateScope, err := normalizeStorageScope(cfg.StateScope)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+	states := newScopedStateSet(req.Options, req.Site)
+	stateDir, err := states.dir(stateScope)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+	stateLock, err := acquireStateLock(stateDir, req.Site)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
 	}
+	defer stateLock.Close()
+
+	state, err := loadState(stateDir, req.Site)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
+	}
+	states.set(stateScope, state)
 
 	if req.Command == commandLogin {
-		return rt.runLoginCommand(req, cfg, state)
+		return rt.runLoginCommand(req, cfg, states, state, stateDir)
 	}
 
-	compiled, jar, state, err := rt.compileAction(req, cfg, state, req.Action)
+	compiled, jar, state, err := rt.compileActionWithStates(req, cfg, states, state, req.Action)
 	if err != nil {
 		exitCode, code := classifyError(err)
 		return rt.writeFailure(req, nil, nil, nil, exitCode, code, err.Error())
@@ -112,7 +128,7 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 		return ExitSuccess
 	}
 
-	outcome := rt.execute(req, compiled, jar, state, true, false)
+	outcome := rt.execute(req, compiled, jar, state, stateDir, true, false)
 	if req.Options.Format == formatText {
 		if outcome.ExitCode == ExitSuccess {
 			content := outcome.RawBody
@@ -148,6 +164,10 @@ func (rt *Runtime) compile(req commandRequest, cfg *configFile, state *profileSt
 }
 
 func (rt *Runtime) compileAction(req commandRequest, cfg *configFile, state *profileState, actionName string) (*compiledRequest, *persistentJar, *profileState, error) {
+	return rt.compileActionWithStates(req, cfg, nil, state, actionName)
+}
+
+func (rt *Runtime) compileActionWithStates(req commandRequest, cfg *configFile, states *scopedStateSet, state *profileState, actionName string) (*compiledRequest, *persistentJar, *profileState, error) {
 	act, err := selectAction(cfg, req.Site, actionName)
 	if err != nil {
 		return nil, nil, nil, err
@@ -160,10 +180,12 @@ func (rt *Runtime) compileAction(req commandRequest, cfg *configFile, state *pro
 
 	res := resolver{
 		state:     state,
+		states:    states,
 		reveal:    req.Command != commandInspect || req.Options.Reveal,
 		params:    req.Options.Params,
 		site:      req.Site,
 		secretDir: req.Options.SecretDir,
+		options:   req.Options,
 	}
 	ctx := context.Background()
 
@@ -328,21 +350,31 @@ func (rt *Runtime) compileAction(req commandRequest, cfg *configFile, state *pro
 }
 
 func (rt *Runtime) compileLogin(req commandRequest, cfg *configFile, state *profileState) (*compiledRequest, *persistentJar, *profileState, error) {
+	return rt.compileLoginWithStates(req, cfg, nil, state)
+}
+
+func (rt *Runtime) compileLoginWithStates(req commandRequest, cfg *configFile, states *scopedStateSet, state *profileState) (*compiledRequest, *persistentJar, *profileState, error) {
 	merged, err := mergeLogin(cfg, req.Options.Timeout)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	secret, err := loadSecret(req.Options.SecretDir, req.Site)
+	secretDir, err := secretDirForScope(req.Options, merged.SecretScope)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	secret, err := loadSecretForScope(secretDir, req.Site, merged.SecretScope)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	res := resolver{
 		state:     state,
+		states:    states,
 		reveal:    true,
 		params:    req.Options.Params,
 		site:      req.Site,
 		secretDir: req.Options.SecretDir,
+		options:   req.Options,
 	}
 	ctx := context.Background()
 
@@ -462,13 +494,13 @@ func (rt *Runtime) compileLogin(req commandRequest, cfg *configFile, state *prof
 	}, jar, state, nil
 }
 
-func (rt *Runtime) runLoginCommand(req commandRequest, cfg *configFile, state *profileState) int {
-	compiled, jar, nextState, err := rt.compileLogin(req, cfg, state)
+func (rt *Runtime) runLoginCommand(req commandRequest, cfg *configFile, states *scopedStateSet, state *profileState, stateDir string) int {
+	compiled, jar, nextState, err := rt.compileLoginWithStates(req, cfg, states, state)
 	if err != nil {
 		exitCode, code := classifyError(err)
 		return rt.writeFailure(req, nil, nil, nil, exitCode, code, err.Error())
 	}
-	outcome := rt.execute(req, compiled, jar, nextState, false, false)
+	outcome := rt.execute(req, compiled, jar, nextState, stateDir, false, false)
 	if outcome.ExitCode != ExitSuccess {
 		if req.Options.Format == formatText && outcome.Envelope.Error != nil {
 			fmt.Fprintf(rt.stderr, "error: %s\n", outcome.Envelope.Error.Message)
@@ -484,7 +516,7 @@ func (rt *Runtime) runLoginCommand(req commandRequest, cfg *configFile, state *p
 	}
 
 	nextState.LastLogin = time.Now().UTC().Format(time.RFC3339)
-	if err := saveState(req.Options.StateDir, req.Site, nextState); err != nil {
+	if err := saveState(stateDir, req.Site, nextState); err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "execution_error", fmt.Errorf("%w: persist state: %v", ErrExecution, err).Error())
 	}
 
@@ -510,7 +542,7 @@ func (rt *Runtime) runLoginCommand(req commandRequest, cfg *configFile, state *p
 	return outcome.ExitCode
 }
 
-func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *persistentJar, state *profileState, persistStateFile bool, markLoginTime bool) requestOutcome {
+func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *persistentJar, state *profileState, stateDir string, persistStateFile bool, markLoginTime bool) requestOutcome {
 	client, err := newHTTPClient(compiled, jar)
 	if err != nil {
 		exitCode, code := classifyError(err)
@@ -536,7 +568,7 @@ func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *p
 				if markLoginTime {
 					state.LastLogin = time.Now().UTC().Format(time.RFC3339)
 				}
-				if persistErr := saveState(req.Options.StateDir, req.Site, state); persistErr != nil {
+				if persistErr := saveState(stateDir, req.Site, state); persistErr != nil {
 					return requestOutcome{
 						Envelope: envelope{
 							OK:     false,
@@ -555,7 +587,7 @@ func (rt *Runtime) execute(req commandRequest, compiled *compiledRequest, jar *p
 		}
 		if !retry && outcome.ExitCode != 0 {
 			if persistStateFile {
-				if persistErr := saveState(req.Options.StateDir, req.Site, state); persistErr != nil {
+				if persistErr := saveState(stateDir, req.Site, state); persistErr != nil {
 					return requestOutcome{
 						Envelope: envelope{
 							OK:     false,

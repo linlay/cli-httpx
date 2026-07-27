@@ -49,22 +49,27 @@ httpx login <site>
 version = 1
 description = "示例 API 站点"
 base_url = "https://api.example.com"
+state_scope = "chat"
 
 [login]
 path = "/session"
 body_format = "form"
+secret_scope = "chat"
 save = { "auth.authorization" = "\"Bearer \" + .body.token" }
 
 [actions.profile]
 description = "获取当前用户资料"
 path = "/profile"
-headers = { Authorization = { from = "state", key = "auth.authorization" } }
+headers = { Authorization = { from = "state", scope = "chat", key = "auth.authorization" } }
 extracts = [{ name = "fields", type = "string[]", description = "需要保留的字段名", example = ["id", "name", "email"] }]
 extract_type = "jq"
 extract_expr = ".body | {id, name, email}"
 ```
 
-内建 `login` 只支持简单用户名密码登录；默认从 `~/.local/secret/httpx/<site>.json` 读取：
+内建 `login` 只支持简单用户名密码登录。上例使用 `secret_scope = "chat"`，因此从
+`$AP_CHAT_DIR/.secret/httpx/<site>.json` 读取；省略时使用 global secret：
+`$XDG_SECRET_HOME/httpx/<site>.json`，并兼容旧的 `$XDG_DATA_HOME/secret/httpx/<site>.json`
+或 `~/.local/secret/httpx/<site>.json`。
 
 ```json
 {
@@ -78,14 +83,15 @@ extract_expr = ".body | {id, name, email}"
 使用步骤：
 
 1. 写一个 `<site>.toml`
-2. 写一个 `~/.local/secret/httpx/<site>.json`
+2. 写一个 `$XDG_SECRET_HOME/httpx/<site>.json`（未设置时可继续使用旧的 `~/.local/secret/httpx/<site>.json`）
 3. 执行 `httpx --config . login <site>`
 4. 执行 `httpx --config . run <site> <action>`
 5. 执行 `httpx --config . sites`、`httpx --config . actions <site>`、`httpx --config . action <site> <action>` 做渐进披露
 
 仓库内的通用示例配置见 [examples/config.toml](./examples/config.toml)。
 
-如果你用 `from = "file"` 读取其他静态 secret，推荐放在 `~/.local/secret/httpx/`；内建登录也默认使用这套目录约定。
+如果你用 `from = "file"` 读取其他静态 secret，推荐放在 `$XDG_SECRET_HOME/httpx/`
+或 `~/.local/secret/httpx/`。
 
 静态凭证应直接通过配置读取文件或站点 secret JSON，不需要导出到环境变量：
 
@@ -94,7 +100,7 @@ extract_expr = ".body | {id, name, email}"
 Cookie = { from = "file", path = "~/.local/secret/httpx/jira.example.com.cookie", trim = true }
 ```
 
-或使用默认 secret JSON 文件 `~/.local/secret/httpx/<site>.json`：
+或使用 global secret JSON 文件 `$XDG_SECRET_HOME/httpx/<site>.json`：
 
 ```json
 {
@@ -129,7 +135,9 @@ Authorization = { from = "env", key = "HTTPX_AUTHORIZATION" }
 Authorization = { from = "secret", key = "authorization", trim = true }
 ```
 
-`httpx` 不再支持 `from = "env"`，也不再提供把每个站点凭证展开成环境变量的命令。CI 或容器环境应挂载 `<site>.json` 到 `$XDG_DATA_HOME/secret/httpx/`，或使用 `from = "file"` 读取平台挂载的 secret 文件；密码管理器可通过 `from = "shell"` 在请求时动态读取。
+`httpx` 不再支持 `from = "env"`，也不再提供把每个站点凭证展开成环境变量的命令。CI
+或容器环境应挂载 `<site>.json` 到 `$XDG_SECRET_HOME/httpx/`，或使用 `from = "file"`
+读取平台挂载的 secret 文件；密码管理器可通过 `from = "shell"` 在请求时动态读取。
 
 实际站点的 site 配置更适合放在用户本地配置目录：
 
@@ -170,7 +178,7 @@ CLI 现在使用 Cobra 风格的根命令和子命令组织；帮助信息统一
 常用全局参数：
 
 - `--config <dir>`：独占配置目录，只读取 `<dir>/<site>.toml`
-- `--state <dir>`：覆盖默认状态目录
+- `--state <dir>`：覆盖 global state 目录；不覆盖 Chat state
 - `--format text|json`：输出格式
 - `--param key=value`：传入运行时参数，可重复
 - `--extract <json-object>`：传入 extractor 运行时输入
@@ -284,15 +292,61 @@ httpx run <site> <action>
   - 系统配置目录：`~/.config/httpx`
   - 文件名：`<site>.toml`
 - secret：
-  - 默认目录：`$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
+  - global 默认目录：`$XDG_SECRET_HOME/httpx`
+  - 兼容旧目录：`$XDG_DATA_HOME/secret/httpx` 或 `~/.local/secret/httpx`
+  - 文件名：`<site>.json`
+- state：
+  - global 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
   - 文件名：`<site>.json`
 
 在 Agent Platform 中，可设置公共的 `AP_AGENT_CONFIG_HOME` 指向当前 agent 的私有配置根目录。未传 `--config` 时，httpx 会先读取 `$AP_AGENT_CONFIG_HOME/httpx/<site>.toml`，同名 site 缺失时才读取 `~/.config/httpx/<site>.toml`；`sites` 显示两侧的去重并集，重名 site 使用 agent 配置。agent 中存在同名文件但无法解析时会直接报错，不会回退系统配置。
 
-显式 `--config <dir>` 只读取该目录，不使用 agent 或系统回退。agent 目录仅放静态 site 配置；secret 与 state 继续使用上面的目录约定，包含 token/cookie 的文件不得提交。
-- state：
-  - 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
-  - 文件名：`<site>.json`
+显式 `--config <dir>` 只读取该目录，不使用 agent 或系统回退。agent 目录仅放静态
+site 配置；secret 与 state 继续使用独立目录，包含 token/cookie 的文件不得提交。
+
+在 Agent Platform 中，平台通过 `AP_CHAT_DIR` 注入当前 Chat 根目录。Chat 级目录固定为：
+
+```text
+$AP_CHAT_DIR/.secret/httpx/<site>.json
+$AP_CHAT_DIR/.state/httpx/<site>.json
+$AP_CHAT_DIR/.state/httpx/<site>.json.lock
+```
+
+`AP_CHAT_DIR` 必须是当前运行环境中已存在、可访问的绝对目录。Host、Container 和 Agent
+terminal 可以使用不同的实际路径，但都必须指向当前 Chat。模型不需要传递 Chat ID、目录
+或 scope CLI 参数。
+
+secret/state 的来源类型与作用域是两个独立维度：
+
+```toml
+# 缺省 scope 固定为 global
+Authorization = { from = "secret", key = "authorization" }
+Authorization = { from = "state", key = "auth.authorization" }
+
+# 显式 Chat 级
+Authorization = { from = "secret", scope = "chat", key = "authorization" }
+Authorization = { from = "state", scope = "chat", key = "auth.authorization" }
+```
+
+`scope` 只接受 `global` 和 `chat`，不支持 `auto` 或 `system`。`scope = "chat"` 缺少
+`AP_CHAT_DIR` 时直接失败，不回退 global。
+
+运行时 cookie、`save` 和 `last_login` 的写入目标由 site 顶层 `state_scope` 控制：
+
+```toml
+state_scope = "chat"
+```
+
+内建登录的 username/password 来源由 `login.secret_scope` 控制：
+
+```toml
+[login]
+path = "/login"
+secret_scope = "chat"
+```
+
+两者省略时均为 `global`，因此旧配置保持原有行为。`XDG_SECRET_HOME` 是 httpx 采用的
+XDG 风格扩展变量，不属于标准 XDG Base Directory 变量。
 
 容器或沙箱里要特别注意：
 
@@ -317,7 +371,9 @@ httpx run <site> <action>
 ./httpx --state "$HOME/.local/state/httpx" state <site>
 ```
 
-部署时建议由启动脚本或运维预创建 state 目录并设置为 `0700`。state 文件本身由 `httpx` 写为 `0600`。
+state 目录由 `httpx` 设为 `0700`，state 和 lock 文件设为 `0600`。同一 scope/site
+的 `load -> request -> save` 使用文件锁串行化，写回通过同目录临时文件和原子替换完成；
+不同 Chat 使用不同目录，可以并行。
 
 ## 测试
 
@@ -442,7 +498,8 @@ curl -I https://cligrep.com/cli-releases/httpx/latest/httpx_linux_amd64.tar.gz
 
 默认保存在本地 state 文件里，不保存在配置文件里：
 
-- 默认目录：`$XDG_STATE_HOME/httpx` 或 `~/.local/state/httpx`
+- global：`$XDG_STATE_HOME/httpx/<site>.json` 或 `~/.local/state/httpx/<site>.json`
+- Chat：`$AP_CHAT_DIR/.state/httpx/<site>.json`
 - 文件名：`<site>.json`
 - `values`：保存 `save = { ... }` 提取出来的字符串值，例如 access token
 - `cookies`：保存登录态 cookie
@@ -453,7 +510,8 @@ curl -I https://cligrep.com/cli-releases/httpx/latest/httpx_linux_amd64.tar.gz
 - 不建议把 `--state` 指到 `/tmp/...`
 - 容器内如需跨重启保留登录态，应把 `HOME` 或显式 state 目录挂载到持久卷
 - 可接受的显式目录示例：`~/.local/state/httpx`
-- 内建登录 secret 文件建议放到 `~/.local/secret/httpx/<site>.json`
+- global 登录 secret 建议放到 `$XDG_SECRET_HOME/httpx/<site>.json`
+- Chat 登录 secret 放到 `$AP_CHAT_DIR/.secret/httpx/<site>.json`
 - 不要把 `state` 目录放进静态 secret 目录里
 
 state 文件是本地明文 JSON。更完整的状态模型、写回时机和安全约束见 [AGENTS.md](./AGENTS.md)。

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -701,6 +702,7 @@ func TestDefaultStateDirUsesXDGStateHomeWhenSet(t *testing.T) {
 func TestDefaultSecretDirUsesLocalSecretPathWithoutXDGData(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	t.Setenv(secretHomeEnv, "")
 	t.Setenv("XDG_DATA_HOME", "")
 
 	got := defaultSecretDir()
@@ -713,11 +715,178 @@ func TestDefaultSecretDirUsesLocalSecretPathWithoutXDGData(t *testing.T) {
 func TestDefaultSecretDirUsesXDGDataHomeWhenSet(t *testing.T) {
 	xdgDataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	t.Setenv(secretHomeEnv, "")
 
 	got := defaultSecretDir()
 	want := filepath.Join(xdgDataHome, "secret", "httpx")
 	if got != want {
 		t.Fatalf("defaultSecretDir mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestDefaultSecretDirPrefersXDGSecretHome(t *testing.T) {
+	secretHome := t.TempDir()
+	t.Setenv(secretHomeEnv, secretHome)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	got := defaultSecretDir()
+	want := filepath.Join(secretHome, "httpx")
+	if got != want {
+		t.Fatalf("defaultSecretDir mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestStorageScopeDefaultsToGlobalAndAcceptsChat(t *testing.T) {
+	t.Parallel()
+
+	for raw, want := range map[string]storageScope{
+		"":       scopeGlobal,
+		"global": scopeGlobal,
+		"chat":   scopeChat,
+	} {
+		got, err := normalizeStorageScope(raw)
+		if err != nil {
+			t.Fatalf("normalizeStorageScope(%q) failed: %v", raw, err)
+		}
+		if got != want {
+			t.Fatalf("normalizeStorageScope(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	if _, err := normalizeStorageScope("auto"); err == nil {
+		t.Fatal("expected auto scope to be rejected")
+	}
+	if _, err := normalizeStorageScope("system"); err == nil {
+		t.Fatal("expected system scope to be rejected")
+	}
+}
+
+func TestDynamicSourceScopeDefaultsToGlobal(t *testing.T) {
+	t.Parallel()
+
+	globalSpec, ok, err := parseSourceSpec(map[string]any{
+		"from": "state",
+		"key":  "auth.token",
+	})
+	if err != nil || !ok {
+		t.Fatalf("parse global source failed: ok=%t err=%v", ok, err)
+	}
+	if globalSpec.Scope != scopeGlobal {
+		t.Fatalf("default source scope = %q, want global", globalSpec.Scope)
+	}
+
+	chatSpec, ok, err := parseSourceSpec(map[string]any{
+		"from":  "secret",
+		"scope": "chat",
+		"key":   "authorization",
+	})
+	if err != nil || !ok {
+		t.Fatalf("parse chat source failed: ok=%t err=%v", ok, err)
+	}
+	if chatSpec.Scope != scopeChat {
+		t.Fatalf("chat source scope = %q, want chat", chatSpec.Scope)
+	}
+
+	if _, _, err := parseSourceSpec(map[string]any{
+		"from":  "param",
+		"scope": "chat",
+		"key":   "user",
+	}); err == nil {
+		t.Fatal("expected scope on param source to be rejected")
+	}
+}
+
+func TestChatStorageDirectoriesUseAPChatDir(t *testing.T) {
+	chatDir := t.TempDir()
+	options := globalOptions{
+		SecretDir:  filepath.Join(t.TempDir(), "global-secret"),
+		StateDir:   filepath.Join(t.TempDir(), "global-state"),
+		ChatDir:    chatDir,
+		ChatDirSet: true,
+	}
+
+	gotSecret, err := secretDirForScope(options, scopeChat)
+	if err != nil {
+		t.Fatalf("resolve chat secret dir: %v", err)
+	}
+	if want := filepath.Join(chatDir, ".secret", "httpx"); gotSecret != want {
+		t.Fatalf("chat secret dir = %q, want %q", gotSecret, want)
+	}
+	gotState, err := stateDirForScope(options, scopeChat)
+	if err != nil {
+		t.Fatalf("resolve chat state dir: %v", err)
+	}
+	if want := filepath.Join(chatDir, ".state", "httpx"); gotState != want {
+		t.Fatalf("chat state dir = %q, want %q", gotState, want)
+	}
+}
+
+func TestChatStorageValidatesAPChatDir(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "private-chat-id", "missing")
+	filePath := filepath.Join(t.TempDir(), "private-chat-id.txt")
+	if err := os.WriteFile(filePath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		value string
+		set   bool
+	}{
+		{name: "missing", set: false},
+		{name: "empty", value: "", set: true},
+		{name: "relative", value: filepath.Join("runtime", "chats", "private-chat-id"), set: true},
+		{name: "root", value: string(filepath.Separator), set: true},
+		{name: "not found", value: missingPath, set: true},
+		{name: "file", value: filePath, set: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			options := globalOptions{
+				StateDir:   t.TempDir(),
+				ChatDir:    tt.value,
+				ChatDirSet: tt.set,
+			}
+			_, err := stateDirForScope(options, scopeChat)
+			if err == nil || !errors.Is(err, ErrConfig) {
+				t.Fatalf("expected AP_CHAT_DIR config error, got %v", err)
+			}
+			if tt.value != "" && filepath.IsAbs(tt.value) && strings.Contains(err.Error(), tt.value) {
+				t.Fatalf("chat directory leaked in error: %v", err)
+			}
+		})
+	}
+}
+
+func TestConfigRejectsUnsupportedStorageScopes(t *testing.T) {
+	t.Parallel()
+
+	for name, content := range map[string]string{
+		"state": `
+version = 1
+description = "Demo"
+base_url = "https://example.com"
+state_scope = "auto"
+
+[actions.get]
+description = "Get"
+path = "/"
+`,
+		"login_secret": `
+version = 1
+description = "Demo"
+base_url = "https://example.com"
+
+[login]
+path = "/login"
+secret_scope = "system"
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadConfig(writeConfig(t, content))
+			if err == nil || !errors.Is(err, ErrConfig) {
+				t.Fatalf("expected config error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -965,6 +1134,7 @@ func TestDefaultStateDirUsesHomeLocalHTTPXState(t *testing.T) {
 
 func TestDefaultSecretDirUsesHomeLocalSecretHTTPXPath(t *testing.T) {
 	t.Setenv("HOME", "/root")
+	t.Setenv(secretHomeEnv, "")
 	t.Setenv("XDG_DATA_HOME", "")
 
 	if got := defaultSecretDir(); got != "/root/.local/secret/httpx" {
@@ -2579,6 +2749,571 @@ path = { from = "state", key = "login.next_url" }
 	for _, action := range actionsResp.Actions {
 		if action.Name == "login_finish" && action.Path != `{"from":"state","key":"login.next_url"}` {
 			t.Fatalf("unexpected dynamic path rendering: %#v", action)
+		}
+	}
+}
+
+func TestCompileReadsGlobalAndChatSecretsByScope(t *testing.T) {
+	globalSecretDir := t.TempDir()
+	chatDir := t.TempDir()
+	chatSecretDir := filepath.Join(chatDir, ".secret", "httpx")
+	if err := os.MkdirAll(chatSecretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalSecretDir, "demo.json"), []byte(`{"token":"global-token"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatSecretDir, "demo.json"), []byte(`{"token":"chat-token"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadConfig(writeConfig(t, `
+version = 1
+description = "Demo"
+base_url = "https://example.com"
+
+[actions.global]
+description = "Global"
+path = "/"
+headers = { Authorization = { from = "secret", key = "token" } }
+
+[actions.chat]
+description = "Chat"
+path = "/"
+headers = { Authorization = { from = "secret", scope = "chat", key = "token" } }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	baseReq := commandRequest{
+		Command: commandRun,
+		Site:    "demo",
+		Options: globalOptions{
+			Format:     formatJSON,
+			SecretDir:  globalSecretDir,
+			StateDir:   t.TempDir(),
+			ChatDir:    chatDir,
+			ChatDirSet: true,
+		},
+	}
+	rt := NewRuntime(ioDiscard{}, ioDiscard{})
+	state := &profileState{Values: map[string]string{}}
+
+	globalReq := baseReq
+	globalReq.Action = "global"
+	globalCompiled, _, _, err := rt.compile(globalReq, cfg, state)
+	if err != nil {
+		t.Fatalf("compile global secret: %v", err)
+	}
+	if got := globalCompiled.Headers["Authorization"]; got != "global-token" {
+		t.Fatalf("global secret = %q", got)
+	}
+
+	chatReq := baseReq
+	chatReq.Action = "chat"
+	chatCompiled, _, _, err := rt.compile(chatReq, cfg, state)
+	if err != nil {
+		t.Fatalf("compile chat secret: %v", err)
+	}
+	if got := chatCompiled.Headers["Authorization"]; got != "chat-token" {
+		t.Fatalf("chat secret = %q", got)
+	}
+}
+
+func TestChatLoginUsesChatSecretAndPersistsChatState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if r.FormValue("username") != "chat-user" || r.FormValue("password") != "chat-password" {
+			http.Error(w, "bad credentials", http.StatusUnauthorized)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "chat-cookie", Path: "/"})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"chat-token"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	chatDir := t.TempDir()
+	chatSecretDir := filepath.Join(chatDir, ".secret", "httpx")
+	if err := os.MkdirAll(chatSecretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatSecretDir, "demo.json"), []byte(`{"username":"chat-user","password":"chat-password"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(chatDirEnv, chatDir)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo"
+base_url = %q
+state_scope = "chat"
+
+[login]
+path = "/login"
+secret_scope = "chat"
+save = { "auth.authorization" = "\"Bearer \" + .body.token" }
+`, server.URL))
+	globalStateDir := t.TempDir()
+
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", globalStateDir,
+		"--format", "json",
+		"login", "demo",
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("chat login failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+
+	chatStateDir := filepath.Join(chatDir, ".state", "httpx")
+	state, err := loadState(chatStateDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Values["auth.authorization"] != "Bearer chat-token" || len(state.Cookies) != 1 || state.LastLogin == "" {
+		t.Fatalf("unexpected chat state: %#v", state)
+	}
+	if _, err := os.Stat(statePath(globalStateDir, "demo")); !os.IsNotExist(err) {
+		t.Fatalf("global state must not be written, stat err=%v", err)
+	}
+}
+
+func TestChatStateIsIsolatedAndDiscoveryHidesChatPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/remember":
+			_, _ = fmt.Fprintf(w, `{"value":%q}`, r.URL.Query().Get("value"))
+		case "/recall":
+			_, _ = fmt.Fprintf(w, `{"value":%q}`, r.Header.Get("X-Remembered"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo"
+base_url = %q
+state_scope = "chat"
+
+[actions.remember]
+description = "Remember"
+path = "/remember"
+query = { value = { from = "param", key = "value" } }
+save = { remembered = ".body.value" }
+
+[actions.recall]
+description = "Recall"
+path = "/recall"
+headers = { X-Remembered = { from = "state", scope = "chat", key = "remembered" } }
+`, server.URL))
+
+	runtimeRoot := t.TempDir()
+	chatA := filepath.Join(runtimeRoot, "runtime", "chats", "chat-a-private")
+	chatB := filepath.Join(runtimeRoot, "runtime", "chats", "chat-b-private")
+	for _, dir := range []string{chatA, chatB} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	globalStateDir := t.TempDir()
+
+	remember := func(chatDir, value string) {
+		t.Helper()
+		t.Setenv(chatDirEnv, chatDir)
+		stdout, stderr, exitCode := runMain(t, []string{
+			"--config", configDir,
+			"--state", globalStateDir,
+			"--format", "json",
+			"run", "demo", "remember",
+			"--param", "value=" + value,
+		})
+		if exitCode != ExitSuccess {
+			t.Fatalf("remember failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+		}
+	}
+	recall := func(chatDir string) string {
+		t.Helper()
+		t.Setenv(chatDirEnv, chatDir)
+		stdout, stderr, exitCode := runMain(t, []string{
+			"--config", configDir,
+			"--state", globalStateDir,
+			"--format", "json",
+			"run", "demo", "recall",
+		})
+		if exitCode != ExitSuccess {
+			t.Fatalf("recall failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatal(err)
+		}
+		body, ok := result["body"].(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected recall body: %#v", result["body"])
+		}
+		value, _ := body["value"].(string)
+		return value
+	}
+
+	remember(chatA, "alpha")
+	remember(chatB, "beta")
+	if got := recall(chatA); got != "alpha" {
+		t.Fatalf("chat A recalled %q", got)
+	}
+	if got := recall(chatB); got != "beta" {
+		t.Fatalf("chat B recalled %q", got)
+	}
+
+	for dir, want := range map[string]string{chatA: "alpha", chatB: "beta"} {
+		state, err := loadState(filepath.Join(dir, ".state", "httpx"), "demo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := state.Values["remembered"]; got != want {
+			t.Fatalf("state under %s = %q, want %q", filepath.Base(dir), got, want)
+		}
+	}
+	if _, err := os.Stat(statePath(globalStateDir, "demo")); !os.IsNotExist(err) {
+		t.Fatalf("global state must remain absent, stat err=%v", err)
+	}
+
+	t.Setenv(chatDirEnv, chatA)
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", globalStateDir,
+		"--format", "json",
+		"state", "demo",
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("state discovery failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if strings.Contains(stdout, chatA) || strings.Contains(stdout, filepath.Base(chatA)) {
+		t.Fatalf("state discovery leaked chat path: %s", stdout)
+	}
+	var response stateResponse
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.State.Scope != string(scopeChat) || response.State.Path != filepath.Join(".state", "httpx", "demo.json") {
+		t.Fatalf("unexpected chat state summary: %#v", response.State)
+	}
+}
+
+func TestChatSiteDiscoveryHidesSecretAndStatePaths(t *testing.T) {
+	privateChatDir := filepath.Join(t.TempDir(), "runtime", "chats", "private-chat-id")
+	if err := os.MkdirAll(privateChatDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(chatDirEnv, privateChatDir)
+	configDir := writeProfileConfig(t, "demo", `
+version = 1
+description = "Demo"
+base_url = "https://example.com"
+state_scope = "chat"
+
+[login]
+path = "/login"
+secret_scope = "chat"
+`)
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--format", "json", "site", "demo"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("site discovery failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if strings.Contains(stdout, privateChatDir) || strings.Contains(stdout, "private-chat-id") {
+		t.Fatalf("site discovery leaked chat path: %s", stdout)
+	}
+
+	var response siteResponse
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Site.Login == nil ||
+		response.Site.Login.SecretScope != string(scopeChat) ||
+		response.Site.Login.SecretPath != filepath.Join(".secret", "httpx", "demo.json") {
+		t.Fatalf("unexpected chat login summary: %#v", response.Site.Login)
+	}
+	if response.Site.State.Scope != string(scopeChat) ||
+		response.Site.State.Path != filepath.Join(".state", "httpx", "demo.json") {
+		t.Fatalf("unexpected chat state summary: %#v", response.Site.State)
+	}
+}
+
+func TestDefaultStateScopeRemainsGlobalWhenAPChatDirIsSet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"value":"global"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	chatDir := t.TempDir()
+	t.Setenv(chatDirEnv, chatDir)
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo"
+base_url = %q
+
+[actions.remember]
+description = "Remember"
+path = "/remember"
+save = { remembered = ".body.value" }
+`, server.URL))
+	globalStateDir := t.TempDir()
+
+	stdout, stderr, exitCode := runMain(t, []string{
+		"--config", configDir,
+		"--state", globalStateDir,
+		"--format", "json",
+		"run", "demo", "remember",
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("global run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	state, err := loadState(globalStateDir, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Values["remembered"] != "global" {
+		t.Fatalf("unexpected global state: %#v", state)
+	}
+	if _, err := os.Stat(filepath.Join(chatDir, ".state", "httpx", "demo.json")); !os.IsNotExist(err) {
+		t.Fatalf("chat state must remain absent, stat err=%v", err)
+	}
+}
+
+func TestChatScopeFailsWithoutAPChatDir(t *testing.T) {
+	t.Setenv(chatDirEnv, "")
+	configDir := writeProfileConfig(t, "demo", `
+version = 1
+description = "Demo"
+base_url = "https://example.com"
+state_scope = "chat"
+
+[actions.get]
+description = "Get"
+path = "/"
+`)
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "get"})
+	if exitCode != ExitConfig {
+		t.Fatalf("expected config failure, got exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if !strings.Contains(stdout+stderr, chatDirEnv) {
+		t.Fatalf("expected AP_CHAT_DIR guidance, stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestExplicitChatDynamicSourceRequiresAPChatDir(t *testing.T) {
+	t.Setenv(chatDirEnv, "")
+	configDir := writeProfileConfig(t, "demo", `
+version = 1
+description = "Demo"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Get"
+path = "/"
+headers = { Authorization = { from = "state", scope = "chat", key = "auth.authorization" } }
+`)
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "get"})
+	if exitCode != ExitConfig {
+		t.Fatalf("expected config failure, got exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if !strings.Contains(stdout+stderr, chatDirEnv) {
+		t.Fatalf("expected AP_CHAT_DIR guidance, stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestChatSecretErrorDoesNotLeakChatPath(t *testing.T) {
+	privateChatDir := filepath.Join(t.TempDir(), "runtime", "chats", "private-chat-id")
+	if err := os.MkdirAll(privateChatDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(chatDirEnv, privateChatDir)
+	configDir := writeProfileConfig(t, "demo", `
+version = 1
+description = "Demo"
+base_url = "https://example.com"
+
+[actions.get]
+description = "Get"
+path = "/"
+headers = { Authorization = { from = "secret", scope = "chat", key = "authorization" } }
+`)
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "--format", "json", "run", "demo", "get"})
+	if exitCode == ExitSuccess {
+		t.Fatalf("expected missing secret failure, stdout=%s", stdout)
+	}
+	output := stdout + stderr
+	if strings.Contains(output, privateChatDir) || strings.Contains(output, "private-chat-id") {
+		t.Fatalf("chat secret error leaked chat path: %s", output)
+	}
+	if !strings.Contains(output, filepath.Join(".secret", "httpx", "demo.json")) {
+		t.Fatalf("expected chat-relative secret path, got %s", output)
+	}
+}
+
+func TestStateFileLockSerializesSameStoreAndAllowsDifferentStores(t *testing.T) {
+	dirA := filepath.Join(t.TempDir(), "a")
+	dirB := filepath.Join(t.TempDir(), "b")
+
+	first, err := acquireStateLock(dirA, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	lockInfo, err := os.Stat(statePath(dirA, "demo") + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lockInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("state lock permissions = %o, want 600", got)
+	}
+
+	type lockResult struct {
+		lock *stateFileLock
+		err  error
+	}
+	sameResult := make(chan lockResult, 1)
+	otherResult := make(chan lockResult, 1)
+	go func() {
+		lock, err := acquireStateLock(dirA, "demo")
+		sameResult <- lockResult{lock: lock, err: err}
+	}()
+	go func() {
+		lock, err := acquireStateLock(dirB, "demo")
+		otherResult <- lockResult{lock: lock, err: err}
+	}()
+
+	select {
+	case result := <-otherResult:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		_ = result.lock.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("different state stores unexpectedly blocked each other")
+	}
+
+	select {
+	case result := <-sameResult:
+		if result.lock != nil {
+			_ = result.lock.Close()
+		}
+		t.Fatalf("same state store acquired before release: %v", result.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-sameResult:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		_ = result.lock.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("same state store did not acquire after release")
+	}
+}
+
+func TestConcurrentChatRunsPreserveBothStateUpdates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(75 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"value":%q}`, strings.TrimPrefix(r.URL.Path, "/"))
+	}))
+	t.Cleanup(server.Close)
+
+	chatDir := t.TempDir()
+	t.Setenv(chatDirEnv, chatDir)
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo"
+base_url = %q
+state_scope = "chat"
+
+[actions.first]
+description = "First"
+path = "/first"
+save = { first = ".body.value" }
+
+[actions.second]
+description = "Second"
+path = "/second"
+save = { second = ".body.value" }
+`, server.URL))
+
+	argsFor := func(action string) []string {
+		return []string{"--config", configDir, "--format", "json", "run", "demo", action}
+	}
+	results := make(chan int, 2)
+	var wg sync.WaitGroup
+	for _, action := range []string{"first", "second"} {
+		wg.Add(1)
+		go func(action string) {
+			defer wg.Done()
+			var stdout, stderr bytes.Buffer
+			results <- Execute(argsFor(action), nil, &stdout, &stderr)
+		}(action)
+	}
+	wg.Wait()
+	close(results)
+	for exitCode := range results {
+		if exitCode != ExitSuccess {
+			t.Fatalf("concurrent run failed with exit %d", exitCode)
+		}
+	}
+
+	state, err := loadState(filepath.Join(chatDir, ".state", "httpx"), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Values["first"] != "first" || state.Values["second"] != "second" {
+		t.Fatalf("concurrent state update was lost: %#v", state.Values)
+	}
+}
+
+func TestSaveStateUsesAtomicFileAndRestrictivePermissions(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "nested", "state")
+	if err := saveState(stateDir, "demo", &profileState{
+		Values: map[string]string{"token": "value"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dirInfo, err := os.Stat(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("state directory permissions = %o, want 700", got)
+	}
+	fileInfo, err := os.Stat(statePath(stateDir, "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("state file permissions = %o, want 600", got)
+	}
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Fatalf("temporary state file was not cleaned up: %s", entry.Name())
 		}
 	}
 }

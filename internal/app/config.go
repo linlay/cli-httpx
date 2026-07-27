@@ -29,6 +29,7 @@ func (d *durationValue) UnmarshalText(text []byte) error {
 type configFile struct {
 	Description string            `toml:"description"`
 	BaseURL     string            `toml:"base_url"`
+	StateScope  string            `toml:"state_scope"`
 	Login       *loginConfig      `toml:"login"`
 	Proxy       any               `toml:"proxy"`
 	Timeout     durationValue     `toml:"timeout"`
@@ -43,6 +44,7 @@ type configFile struct {
 type loginConfig struct {
 	Method         string            `toml:"method"`
 	Path           string            `toml:"path"`
+	SecretScope    string            `toml:"secret_scope"`
 	BodyFormat     string            `toml:"body_format"`
 	UsernameField  string            `toml:"username_field"`
 	PasswordField  string            `toml:"password_field"`
@@ -103,6 +105,7 @@ type mergedAction struct {
 type mergedLogin struct {
 	Method       string
 	Path         string
+	SecretScope  storageScope
 	BodyFormat   string
 	UsernameKey  string
 	PasswordKey  string
@@ -151,6 +154,9 @@ func validateConfig(cfg *configFile) error {
 	}
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		return fmt.Errorf("%w: base_url is required", ErrConfig)
+	}
+	if _, err := normalizeStorageScope(cfg.StateScope); err != nil {
+		return fmt.Errorf("%w: state_scope: %v", ErrConfig, err)
 	}
 	if len(cfg.Actions) == 0 && cfg.Login == nil {
 		return fmt.Errorf("%w: actions or login is required", ErrConfig)
@@ -269,6 +275,9 @@ func validateLoginConfig(login *loginConfig) error {
 	if strings.TrimSpace(login.Path) == "" {
 		return fmt.Errorf("%w: login.path is required", ErrConfig)
 	}
+	if _, err := normalizeStorageScope(login.SecretScope); err != nil {
+		return fmt.Errorf("%w: login.secret_scope: %v", ErrConfig, err)
+	}
 	if _, err := normalizeExpectStatus(login.ExpectStatus); err != nil {
 		return fmt.Errorf("%w: login.expect_status: %v", ErrConfig, err)
 	}
@@ -319,6 +328,10 @@ func mergeLogin(cfg *configFile, timeoutOverride time.Duration) (mergedLogin, er
 	if err != nil {
 		return mergedLogin{}, err
 	}
+	secretScope, err := normalizeStorageScope(cfg.Login.SecretScope)
+	if err != nil {
+		return mergedLogin{}, err
+	}
 
 	method := strings.ToUpper(strings.TrimSpace(cfg.Login.Method))
 	if method == "" {
@@ -342,6 +355,7 @@ func mergeLogin(cfg *configFile, timeoutOverride time.Duration) (mergedLogin, er
 	return mergedLogin{
 		Method:       method,
 		Path:         cfg.Login.Path,
+		SecretScope:  secretScope,
 		BodyFormat:   bodyFormat,
 		UsernameKey:  usernameKey,
 		PasswordKey:  passwordKey,

@@ -22,10 +22,11 @@ type sitesResponse struct {
 }
 
 type loginSummary struct {
-	Enabled    bool   `json:"enabled"`
-	Type       string `json:"type,omitempty"`
-	Path       string `json:"path,omitempty"`
-	SecretPath string `json:"secret_path,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Type        string `json:"type,omitempty"`
+	Path        string `json:"path,omitempty"`
+	SecretScope string `json:"secret_scope,omitempty"`
+	SecretPath  string `json:"secret_path,omitempty"`
 }
 
 type siteSummary struct {
@@ -74,6 +75,7 @@ type actionResponse struct {
 
 type stateSummary struct {
 	Exists      bool   `json:"exists"`
+	Scope       string `json:"scope"`
 	Path        string `json:"path"`
 	LastLogin   string `json:"last_login,omitempty"`
 	SavedValues int    `json:"saved_values"`
@@ -97,7 +99,11 @@ func (rt *Runtime) runListSites(req commandRequest) int {
 		if err != nil {
 			return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 		}
-		state, err := summarizeState(req.Options.StateDir, site)
+		scope, err := normalizeStorageScope(cfg.StateScope)
+		if err != nil {
+			return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+		}
+		state, err := summarizeStateForOptions(req.Options, site, scope)
 		if err != nil {
 			return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
 		}
@@ -128,16 +134,24 @@ func (rt *Runtime) runShowSite(req commandRequest) int {
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
-	state, err := summarizeState(req.Options.StateDir, req.Site)
+	stateScope, err := normalizeStorageScope(cfg.StateScope)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+	state, err := summarizeStateForOptions(req.Options, req.Site, stateScope)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
+	}
+	login, err := summarizeLogin(cfg, req.Options, req.Site)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
 
 	summary := siteSummary{
 		Name:        req.Site,
 		Description: cfg.Description,
 		BaseURL:     cfg.BaseURL,
-		Login:       summarizeLogin(cfg, req.Options.SecretDir, req.Site),
+		Login:       login,
 		Actions:     len(cfg.Actions),
 		State:       state,
 	}
@@ -248,7 +262,15 @@ func (rt *Runtime) runShowAction(req commandRequest) int {
 }
 
 func (rt *Runtime) runShowState(req commandRequest) int {
-	summary, err := summarizeState(req.Options.StateDir, req.Site)
+	cfg, _, err := loadSiteConfigWithFallback(req.Options.ConfigDir, !req.Options.ConfigExplicit, req.Site)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+	scope, err := normalizeStorageScope(cfg.StateScope)
+	if err != nil {
+		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
+	}
+	summary, err := summarizeStateForOptions(req.Options, req.Site, scope)
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
 	}
@@ -284,17 +306,40 @@ func loadSiteConfigWithFallback(configDir string, allowFallback bool, site strin
 }
 
 func summarizeState(dir, site string) (stateSummary, error) {
+	return summarizeStateAt(dir, site, scopeGlobal)
+}
+
+func summarizeStateForOptions(options globalOptions, site string, scope storageScope) (stateSummary, error) {
+	dir, err := stateDirForScope(options, scope)
+	if err != nil {
+		return stateSummary{}, err
+	}
+	return summarizeStateAt(dir, site, scope)
+}
+
+func summarizeStateAt(dir, site string, scope storageScope) (stateSummary, error) {
 	path := statePath(dir, site)
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return stateSummary{Exists: false, Path: path}, nil
+			return stateSummary{Exists: false, Scope: string(scope), Path: displayStatePath(dir, site, scope)}, nil
 		}
-		return stateSummary{}, err
+		return stateSummary{}, fmt.Errorf(
+			"%w: inspect state file %q: %v",
+			ErrExecution,
+			displayStatePath(dir, site, scope),
+			pathErrorCause(err),
+		)
 	}
 	if info.IsDir() {
-		return stateSummary{}, fmt.Errorf("%w: state path %q must be a file", ErrExecution, path)
+		return stateSummary{}, fmt.Errorf("%w: state path %q must be a file", ErrExecution, displayStatePath(dir, site, scope))
 	}
+
+	lock, err := acquireStateLock(dir, site)
+	if err != nil {
+		return stateSummary{}, err
+	}
+	defer lock.Close()
 
 	state, err := loadState(dir, site)
 	if err != nil {
@@ -302,7 +347,8 @@ func summarizeState(dir, site string) (stateSummary, error) {
 	}
 	return stateSummary{
 		Exists:      true,
-		Path:        path,
+		Scope:       string(scope),
+		Path:        displayStatePath(dir, site, scope),
 		LastLogin:   state.LastLogin,
 		SavedValues: len(state.Values),
 		Cookies:     len(state.Cookies),
@@ -336,14 +382,16 @@ func writeSiteText(w io.Writer, summary siteSummary) error {
 		loginSecretPath = summary.Login.SecretPath
 	}
 	_, err := fmt.Fprintf(w,
-		"site: %s\ndescription: %s\nbase_url: %s\nlogin: %s\nlogin_path: %s\nlogin_secret_path: %s\nactions: %d\nstate_exists: %t\nstate_path: %s\nlast_login: %s\nsaved_values: %d\ncookies: %d\n",
+		"site: %s\ndescription: %s\nbase_url: %s\nlogin: %s\nlogin_path: %s\nlogin_secret_scope: %s\nlogin_secret_path: %s\nactions: %d\nstate_scope: %s\nstate_exists: %t\nstate_path: %s\nlast_login: %s\nsaved_values: %d\ncookies: %d\n",
 		summary.Name,
 		summary.Description,
 		summary.BaseURL,
 		loginMode,
 		loginPath,
+		emptyText(loginSecretScope(summary.Login)),
 		loginSecretPath,
 		summary.Actions,
+		summary.State.Scope,
 		summary.State.Exists,
 		summary.State.Path,
 		emptyText(summary.State.LastLogin),
@@ -596,8 +644,9 @@ func describeExample(value any) string {
 
 func writeStateText(w io.Writer, site string, state stateSummary) error {
 	_, err := fmt.Fprintf(w,
-		"site: %s\nexists: %t\npath: %s\nlast_login: %s\nsaved_values: %d\ncookies: %d\n",
+		"site: %s\nscope: %s\nexists: %t\npath: %s\nlast_login: %s\nsaved_values: %d\ncookies: %d\n",
 		site,
+		state.Scope,
 		state.Exists,
 		state.Path,
 		emptyText(state.LastLogin),
@@ -627,14 +676,30 @@ func describeActionPath(path any) string {
 	}
 }
 
-func summarizeLogin(cfg *configFile, secretDir, site string) *loginSummary {
+func summarizeLogin(cfg *configFile, options globalOptions, site string) (*loginSummary, error) {
 	if cfg.Login == nil {
-		return nil
+		return nil, nil
+	}
+	scope, err := normalizeStorageScope(cfg.Login.SecretScope)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := secretDirForScope(options, scope)
+	if err != nil {
+		return nil, err
 	}
 	return &loginSummary{
-		Enabled:    true,
-		Type:       "basic",
-		Path:       cfg.Login.Path,
-		SecretPath: secretPath(secretDir, site),
+		Enabled:     true,
+		Type:        "basic",
+		Path:        cfg.Login.Path,
+		SecretScope: string(scope),
+		SecretPath:  displaySecretPath(dir, site, scope),
+	}, nil
+}
+
+func loginSecretScope(summary *loginSummary) string {
+	if summary == nil {
+		return ""
 	}
+	return summary.SecretScope
 }
