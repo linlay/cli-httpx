@@ -3007,6 +3007,106 @@ headers = { X-Remembered = { from = "state", scope = "chat", key = "remembered" 
 	}
 }
 
+func TestChatBindingTokenIsSavedAndSentWithoutAppearingInActionOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/attach":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			fileName, _ := payload["fileName"].(string)
+			_, _ = fmt.Fprintf(
+				w,
+				`{"ok":true,"bindingToken":%q,"session":{"ready":true,"editorType":"word","capabilities":{"tools":["word_inspect"]}}}`,
+				"binding-for-"+fileName,
+			)
+		case "/execute":
+			_, _ = fmt.Fprintf(w, `{"authorization":%q}`, r.Header.Get("Authorization"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	configDir := writeProfileConfig(t, "office", fmt.Sprintf(`
+version = 1
+description = "Office"
+base_url = %q
+state_scope = "chat"
+
+[actions.attach]
+description = "Attach"
+method = "POST"
+path = "/attach"
+body = { fileName = { from = "param", key = "file_name" }, editorType = { from = "literal", value = "word" } }
+extract_type = "jq"
+extract_expr = '''{attached: .body.ok, ready: .body.session.ready, editorType: .body.session.editorType, capabilities: .body.session.capabilities}'''
+save = { "auth.bridge" = '''"Bearer " + .body.bindingToken''' }
+
+[actions.execute]
+description = "Execute"
+path = "/execute"
+headers = { Authorization = { from = "state", scope = "chat", key = "auth.bridge" } }
+`, server.URL))
+
+	runtimeRoot := t.TempDir()
+	chatA := filepath.Join(runtimeRoot, "chat-a")
+	chatB := filepath.Join(runtimeRoot, "chat-b")
+	for _, dir := range []string{chatA, chatB} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	attach := func(chatDir, fileName string) {
+		t.Helper()
+		t.Setenv(chatDirEnv, chatDir)
+		stdout, stderr, exitCode := runMain(t, []string{
+			"--config", configDir,
+			"--format", "json",
+			"run", "office", "attach",
+			"--param", "file_name=" + fileName,
+		})
+		if exitCode != ExitSuccess {
+			t.Fatalf("attach failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+		}
+		if strings.Contains(stdout, "binding-for-") {
+			t.Fatalf("attach output leaked binding token: %s", stdout)
+		}
+	}
+	execute := func(chatDir string) string {
+		t.Helper()
+		t.Setenv(chatDirEnv, chatDir)
+		stdout, stderr, exitCode := runMain(t, []string{
+			"--config", configDir,
+			"--format", "json",
+			"run", "office", "execute",
+		})
+		if exitCode != ExitSuccess {
+			t.Fatalf("execute failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+		}
+		var response map[string]any
+		if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+			t.Fatal(err)
+		}
+		body, _ := response["body"].(map[string]any)
+		authorization, _ := body["authorization"].(string)
+		return authorization
+	}
+
+	attach(chatA, "alpha.docx")
+	attach(chatB, "beta.docx")
+	if got := execute(chatA); got != "Bearer binding-for-alpha.docx" {
+		t.Fatalf("chat A authorization = %q", got)
+	}
+	if got := execute(chatB); got != "Bearer binding-for-beta.docx" {
+		t.Fatalf("chat B authorization = %q", got)
+	}
+}
+
 func TestChatSiteDiscoveryHidesSecretAndStatePaths(t *testing.T) {
 	privateChatDir := filepath.Join(t.TempDir(), "runtime", "chats", "private-chat-id")
 	if err := os.MkdirAll(privateChatDir, 0o700); err != nil {
@@ -3108,6 +3208,29 @@ path = "/"
 	}
 	if !strings.Contains(stdout+stderr, chatDirEnv) {
 		t.Fatalf("expected AP_CHAT_DIR guidance, stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestInspectChatScopeDoesNotCreateStateArtifacts(t *testing.T) {
+	chatDir := t.TempDir()
+	t.Setenv(chatDirEnv, chatDir)
+	configDir := writeProfileConfig(t, "demo", `
+version = 1
+description = "Demo"
+base_url = "https://example.com"
+state_scope = "chat"
+
+[actions.get]
+description = "Get"
+path = "/"
+`)
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "get"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if _, err := os.Stat(filepath.Join(chatDir, ".state")); !os.IsNotExist(err) {
+		t.Fatalf("inspect created chat state artifacts: %v", err)
 	}
 }
 

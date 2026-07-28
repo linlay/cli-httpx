@@ -58,12 +58,6 @@ func (s *scopedStateSet) load(scope storageScope) (*profileState, error) {
 	if err != nil {
 		return nil, err
 	}
-	lock, err := acquireStateLock(dir, s.site)
-	if err != nil {
-		return nil, err
-	}
-	defer lock.Close()
-
 	state, err := loadState(dir, s.site)
 	if err != nil {
 		return nil, err

@@ -98,13 +98,18 @@ func (rt *Runtime) runActionCommand(req commandRequest) int {
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitConfig, "config_error", err.Error())
 	}
-	stateLock, err := acquireStateLock(stateDir, req.Site)
-	if err != nil {
-		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
-	}
-	defer stateLock.Close()
 
-	state, err := loadState(stateDir, req.Site)
+	var state *profileState
+	if req.Command == commandInspect {
+		state, err = loadState(stateDir, req.Site)
+	} else {
+		stateLock, lockErr := acquireStateLock(stateDir, req.Site)
+		if lockErr != nil {
+			return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", lockErr.Error())
+		}
+		defer stateLock.Close()
+		state, err = loadState(stateDir, req.Site)
+	}
 	if err != nil {
 		return rt.writeFailure(req, nil, nil, nil, ExitExecution, "state_error", err.Error())
 	}
