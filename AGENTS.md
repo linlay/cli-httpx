@@ -199,6 +199,7 @@ httpx inspect <site> <action>
 
 当前支持这些动态值来源：
 
+- `env`
 - `file`
 - `secret`
 - `shell`
@@ -219,6 +220,7 @@ httpx inspect <site> <action>
 
 用途简述：
 
+- `env`：适合读取平台、CI 或容器显式注入的短期值
 - `file`：适合读取本地密钥或临时凭证
 - `secret`：适合从默认 `<site>.json` 读取静态账号、token、cookie 等凭证
 - `shell`：适合从密码管理器或命令输出动态取值
@@ -228,8 +230,8 @@ httpx inspect <site> <action>
 
 风险和约束：
 
-- 不支持 `from = "env"`，也不把站点凭证展开为环境变量
-- CI 或容器环境应挂载 `<site>.json` 或独立 secret 文件，并使用 `secret` / `file`
+- `env` 只读取配置中 `key` 显式指定的变量，不做 `${VAR}` 字符串插值；变量缺失时失败
+- 静态凭证仍推荐使用 `secret` / `file`，注入式短期凭证可使用 `env`
 - `shell` 依赖本机环境，超时或命令失败会导致执行失败
 - `state` 依赖本地 state 文件，适合会话复用，不适合作为跨环境共享机制
 - `param` 缺失时会失败，除非配置了默认值

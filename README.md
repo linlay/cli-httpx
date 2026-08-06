@@ -93,7 +93,7 @@ extract_expr = ".body | {id, name, email}"
 如果你用 `from = "file"` 读取其他静态 secret，推荐放在 `$XDG_SECRET_HOME/httpx/`
 或 `~/.local/secret/httpx/`。
 
-静态凭证应直接通过配置读取文件或站点 secret JSON，不需要导出到环境变量：
+静态凭证可以通过配置读取文件或站点 secret JSON：
 
 ```toml
 [headers]
@@ -113,31 +113,22 @@ Cookie = { from = "file", path = "~/.local/secret/httpx/jira.example.com.cookie"
 Cookie = { from = "secret", key = "cookie", trim = true }
 ```
 
-旧配置如果仍使用：
+平台、CI 或容器已经注入的短期凭证可以直接从环境变量读取：
+
+```bash
+export HTTPX_AUTHORIZATION='Bearer ...'
+```
 
 ```toml
 [headers]
-Authorization = { from = "env", key = "HTTPX_AUTHORIZATION" }
+Authorization = { from = "env", key = "HTTPX_AUTHORIZATION", trim = true }
 ```
 
-应把凭证放进 `<site>.json`：
+`env` 只读取 `key` 显式指定的变量；变量未设置时请求失败，已经设置为空字符串时按空值处理。
+可选的 `trim = true` 会去掉首尾空白。普通 `inspect` 不读取环境变量并显示为 `***`，只有
+`run` 或 `inspect --reveal` 才解析真实值。配置不会对普通字符串执行 `${VAR}` 插值。
 
-```json
-{
-  "authorization": "Bearer ..."
-}
-```
-
-然后改为：
-
-```toml
-[headers]
-Authorization = { from = "secret", key = "authorization", trim = true }
-```
-
-`httpx` 不再支持 `from = "env"`，也不再提供把每个站点凭证展开成环境变量的命令。CI
-或容器环境应挂载 `<site>.json` 到 `$XDG_SECRET_HOME/httpx/`，或使用 `from = "file"`
-读取平台挂载的 secret 文件；密码管理器可通过 `from = "shell"` 在请求时动态读取。
+持久静态凭证仍推荐使用 `secret` / `file`；密码管理器等外部命令可通过 `shell` 动态读取。
 
 实际站点的 site 配置更适合放在用户本地配置目录：
 

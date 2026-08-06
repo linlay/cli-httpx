@@ -71,3 +71,8 @@ headers = { Authorization = { from = "shell", cmd = "pass demo/token", trim = tr
 extract_type = "regex"
 extract_pattern = "token=([A-Za-z0-9_-]+)"
 extract_group = 1
+
+[actions.environment]
+description = "Fetch information using an environment-provided authorization value"
+path = "/environment"
+headers = { Authorization = { from = "env", key = "HTTPX_AUTHORIZATION", trim = true } }

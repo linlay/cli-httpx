@@ -102,6 +102,14 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		if value, ok := input["default"]; ok {
 			spec.Default = value
 		}
+	case "env":
+		if err := rejectUnknownSourceKeys(input, "from", "key", "trim"); err != nil {
+			return sourceSpec{}, false, err
+		}
+		spec.Key, ok = input["key"].(string)
+		if !ok || spec.Key == "" {
+			return sourceSpec{}, false, fmt.Errorf("%w: env source requires non-empty key", ErrConfig)
+		}
 	case "file":
 		if err := rejectUnknownSourceKeys(input, "from", "path", "trim"); err != nil {
 			return sourceSpec{}, false, err
@@ -148,16 +156,6 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		}
 		spec.Scope = scope
 	default:
-		if from == "env" {
-			return sourceSpec{}, false, fmt.Errorf(
-				"%w: dynamic source %q is no longer supported; use %q, %q, or %q for credentials",
-				ErrConfig,
-				from,
-				"secret",
-				"file",
-				"shell",
-			)
-		}
 		return sourceSpec{}, false, fmt.Errorf("%w: unsupported source %q", ErrConfig, from)
 	}
 	if trim, ok := input["trim"].(bool); ok {
@@ -229,6 +227,12 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 			return maybeTrimValue(spec.Default, spec.Trim), nil
 		}
 		return nil, fmt.Errorf("%w: parameter %q not provided", ErrExecution, spec.Key)
+	case "env":
+		value, ok := os.LookupEnv(spec.Key)
+		if !ok {
+			return nil, fmt.Errorf("%w: environment variable %q is not set", ErrExecution, spec.Key)
+		}
+		return maybeTrim(value, spec.Trim), nil
 	case "file":
 		path, err := expandPath(spec.Path)
 		if err != nil {

@@ -46,7 +46,7 @@ bogus = true
 	}
 }
 
-func TestLoadConfigRejectsEnvSourceWithMigrationHint(t *testing.T) {
+func TestLoadConfigAcceptsEnvSource(t *testing.T) {
 	t.Parallel()
 
 	configPath := writeConfig(t, `
@@ -59,17 +59,28 @@ description = "Fetch home"
 path = { from = "env", key = "HTTPX_PATH" }
 `)
 
-	_, err := loadConfig(configPath)
-	if err == nil || !errors.Is(err, ErrConfig) {
-		t.Fatalf("expected config error, got %v", err)
+	if _, err := loadConfig(configPath); err != nil {
+		t.Fatalf("expected env source to load, got %v", err)
 	}
-	for _, want := range []string{
-		`dynamic source "env" is no longer supported`,
-		`use "secret", "file", or "shell" for credentials`,
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("expected error to contain %q, got %v", want, err)
-		}
+}
+
+func TestParseEnvSourceRejectsInvalidFields(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]map[string]any{
+		"missing_key": {"from": "env"},
+		"empty_key":   {"from": "env", "key": ""},
+		"scope":       {"from": "env", "key": "HTTPX_TOKEN", "scope": "global"},
+		"default":     {"from": "env", "key": "HTTPX_TOKEN", "default": "fallback"},
+		"unknown":     {"from": "env", "key": "HTTPX_TOKEN", "unknown": true},
+	}
+
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := parseSourceSpec(input); err == nil || !errors.Is(err, ErrConfig) {
+				t.Fatalf("expected config error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -457,8 +468,9 @@ query = { scope = "action" }
 	}
 }
 
-func TestResolverSupportsFileSecretShellAndState(t *testing.T) {
+func TestResolverSupportsEnvFileSecretShellAndState(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("HTTPX_TEST_RESOLVER_ENV", " env-value \n")
 	filePath := filepath.Join(tmpDir, "token.txt")
 	if err := os.WriteFile(filePath, []byte(" file-value \n"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -478,6 +490,11 @@ func TestResolverSupportsFileSecretShellAndState(t *testing.T) {
 	}
 
 	cases := map[string]map[string]any{
+		"env": {
+			"from": "env",
+			"key":  "HTTPX_TEST_RESOLVER_ENV",
+			"trim": true,
+		},
 		"file": {
 			"from": "file",
 			"path": filePath,
@@ -502,6 +519,7 @@ func TestResolverSupportsFileSecretShellAndState(t *testing.T) {
 	}
 
 	expected := map[string]string{
+		"env":    "env-value",
 		"file":   "file-value",
 		"secret": "secret-value",
 		"shell":  "shell-value",
@@ -516,6 +534,108 @@ func TestResolverSupportsFileSecretShellAndState(t *testing.T) {
 		if value != expected[name] {
 			t.Fatalf("%s resolve mismatch: got %v want %q", name, value, expected[name])
 		}
+	}
+}
+
+func TestResolverEnvironmentVariableSemantics(t *testing.T) {
+	r := resolver{reveal: true}
+	t.Setenv("HTTPX_TEST_EMPTY_ENV", "")
+
+	value, err := r.resolveAny(context.Background(), map[string]any{
+		"from": "env",
+		"key":  "HTTPX_TEST_EMPTY_ENV",
+	})
+	if err != nil {
+		t.Fatalf("resolve explicitly empty environment variable: %v", err)
+	}
+	if value != "" {
+		t.Fatalf("expected explicitly empty environment variable, got %#v", value)
+	}
+
+	const missingKey = "HTTPX_TEST_ENV_DEFINITELY_MISSING"
+	original, existed := os.LookupEnv(missingKey)
+	if err := os.Unsetenv(missingKey); err != nil {
+		t.Fatalf("unset test environment variable: %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(missingKey, original)
+		} else {
+			_ = os.Unsetenv(missingKey)
+		}
+	})
+
+	_, err = r.resolveAny(context.Background(), map[string]any{
+		"from": "env",
+		"key":  missingKey,
+	})
+	if err == nil || !errors.Is(err, ErrExecution) {
+		t.Fatalf("expected missing environment variable execution error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `environment variable "`+missingKey+`" is not set`) {
+		t.Fatalf("unexpected missing environment variable error: %v", err)
+	}
+}
+
+func TestCompileUsesEnvironmentAcrossRequestFields(t *testing.T) {
+	t.Setenv("HTTPX_TEST_ENV_PATH", " /secure ")
+	t.Setenv("HTTPX_TEST_ENV_PROXY", "http://proxy.example:8001")
+	t.Setenv("HTTPX_TEST_ENV_AUTHORIZATION", " Bearer env-token \n")
+	t.Setenv("HTTPX_TEST_ENV_SESSION", "session-env")
+	t.Setenv("HTTPX_TEST_ENV_QUERY", "query-env")
+	t.Setenv("HTTPX_TEST_ENV_BODY", "body-env")
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.secure]
+description = "Use environment values"
+method = "POST"
+path = { from = "env", key = "HTTPX_TEST_ENV_PATH", trim = true }
+proxy = { from = "env", key = "HTTPX_TEST_ENV_PROXY" }
+headers = { Authorization = { from = "env", key = "HTTPX_TEST_ENV_AUTHORIZATION", trim = true } }
+cookies = { session = { from = "env", key = "HTTPX_TEST_ENV_SESSION" } }
+query = { token = { from = "env", key = "HTTPX_TEST_ENV_QUERY" } }
+body = { value = { from = "env", key = "HTTPX_TEST_ENV_BODY" } }
+`)
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	compiled, _, _, err := NewRuntime(ioDiscard{}, ioDiscard{}).compile(
+		commandRequest{
+			Command: commandRun,
+			Site:    "demo",
+			Action:  "secure",
+			Options: globalOptions{
+				Format:   formatJSON,
+				StateDir: t.TempDir(),
+			},
+		},
+		cfg,
+		&profileState{Values: map[string]string{}},
+	)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	if compiled.URL != "https://example.com/secure?token=query-env" {
+		t.Fatalf("unexpected URL: %s", compiled.URL)
+	}
+	if compiled.Proxy != "http://proxy.example:8001" {
+		t.Fatalf("unexpected proxy: %q", compiled.Proxy)
+	}
+	if compiled.Headers["Authorization"] != "Bearer env-token" {
+		t.Fatalf("unexpected Authorization header: %#v", compiled.Headers)
+	}
+	if compiled.Cookies["session"] != "session-env" {
+		t.Fatalf("unexpected cookies: %#v", compiled.Cookies)
+	}
+	body, ok := compiled.Body.(map[string]any)
+	if !ok || body["value"] != "body-env" {
+		t.Fatalf("unexpected body: %#v", compiled.Body)
 	}
 }
 
@@ -1865,6 +1985,57 @@ body = { nested = { from = "secret", key = "payload" } }
 	body, ok := compiled.Body.(map[string]any)
 	if !ok || body["nested"] != redactedValue {
 		t.Fatalf("expected redacted body, got %#v", compiled.Body)
+	}
+}
+
+func TestInspectRedactsEnvironmentWithoutReadingIt(t *testing.T) {
+	const envKey = "HTTPX_TEST_INSPECT_AUTHORIZATION"
+	original, existed := os.LookupEnv(envKey)
+	if err := os.Unsetenv(envKey); err != nil {
+		t.Fatalf("unset test environment variable: %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(envKey, original)
+		} else {
+			_ = os.Unsetenv(envKey)
+		}
+	})
+
+	configDir := writeProfileConfig(t, "demo", `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.secret]
+description = "Environment-backed request"
+path = "/secret"
+headers = { Authorization = { from = "env", key = "HTTPX_TEST_INSPECT_AUTHORIZATION", trim = true } }
+`)
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "secret"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("inspect failed without environment variable: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	var redacted compiledRequest
+	if err := json.Unmarshal([]byte(stdout), &redacted); err != nil {
+		t.Fatalf("unmarshal redacted inspect output: %v", err)
+	}
+	if redacted.Headers["Authorization"] != redactedValue {
+		t.Fatalf("expected redacted environment header, got %#v", redacted.Headers)
+	}
+
+	t.Setenv(envKey, " Bearer inspect-secret \n")
+	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "inspect", "--reveal", "demo", "secret"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("revealed inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	var revealed compiledRequest
+	if err := json.Unmarshal([]byte(stdout), &revealed); err != nil {
+		t.Fatalf("unmarshal revealed inspect output: %v", err)
+	}
+	if revealed.Headers["Authorization"] != "Bearer inspect-secret" {
+		t.Fatalf("unexpected revealed environment header: %#v", revealed.Headers)
 	}
 }
 
