@@ -73,6 +73,6 @@ extract_pattern = "token=([A-Za-z0-9_-]+)"
 extract_group = 1
 
 [actions.environment]
-description = "Fetch information using an environment-provided authorization value"
+description = "Fetch information using an environment-provided access token"
 path = "/environment"
-headers = { Authorization = { from = "env", key = "HTTPX_AUTHORIZATION", trim = true } }
+headers = { Authorization = { from = "env", key = "HTTPX_ACCESS_TOKEN", trim = true, prefix = "Bearer " } }

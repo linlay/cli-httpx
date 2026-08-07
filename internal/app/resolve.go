@@ -32,6 +32,7 @@ type sourceSpec struct {
 	Cmd       string
 	TimeoutMS int
 	Trim      bool
+	Prefix    *string
 	Value     any
 	Default   any
 	Scope     storageScope
@@ -92,7 +93,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		}
 		spec.Value = value
 	case "param":
-		if err := rejectUnknownSourceKeys(input, "from", "key", "default", "trim"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "key", "default", "trim", "prefix"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -103,7 +104,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			spec.Default = value
 		}
 	case "env":
-		if err := rejectUnknownSourceKeys(input, "from", "key", "trim"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "key", "trim", "prefix"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -111,7 +112,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, fmt.Errorf("%w: env source requires non-empty key", ErrConfig)
 		}
 	case "file":
-		if err := rejectUnknownSourceKeys(input, "from", "path", "trim"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "path", "trim", "prefix"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Path, ok = input["path"].(string)
@@ -119,7 +120,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, fmt.Errorf("%w: file source requires non-empty path", ErrConfig)
 		}
 	case "secret":
-		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -132,7 +133,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		}
 		spec.Scope = scope
 	case "shell":
-		if err := rejectUnknownSourceKeys(input, "from", "cmd", "timeout_ms", "trim"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "cmd", "timeout_ms", "trim", "prefix"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Cmd, ok = input["cmd"].(string)
@@ -143,7 +144,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			spec.TimeoutMS = timeout
 		}
 	case "state":
-		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -160,6 +161,13 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 	}
 	if trim, ok := input["trim"].(bool); ok {
 		spec.Trim = trim
+	}
+	if rawPrefix, ok := input["prefix"]; ok {
+		prefix, ok := rawPrefix.(string)
+		if !ok {
+			return sourceSpec{}, false, fmt.Errorf("%w: dynamic source prefix must be a string", ErrConfig)
+		}
+		spec.Prefix = &prefix
 	}
 	return spec, true, nil
 }
@@ -202,7 +210,7 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 	if !r.reveal && spec.From != "literal" {
 		if spec.From == "param" {
 			if _, ok := r.params[spec.Key]; !ok && spec.Default != nil {
-				return maybeTrimValue(spec.Default, spec.Trim), nil
+				return applySourceTransforms(spec.Default, spec)
 			}
 		}
 		return redactedValue, nil
@@ -219,12 +227,12 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 				if err != nil {
 					return nil, fmt.Errorf("%w: parameter %q: %v", ErrExecution, spec.Key, err)
 				}
-				return coerced, nil
+				return applySourcePrefix(coerced, spec)
 			}
-			return value, nil
+			return applySourcePrefix(value, spec)
 		}
 		if spec.Default != nil {
-			return maybeTrimValue(spec.Default, spec.Trim), nil
+			return applySourceTransforms(spec.Default, spec)
 		}
 		return nil, fmt.Errorf("%w: parameter %q not provided", ErrExecution, spec.Key)
 	case "env":
@@ -232,7 +240,7 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		if !ok {
 			return nil, fmt.Errorf("%w: environment variable %q is not set", ErrExecution, spec.Key)
 		}
-		return maybeTrim(value, spec.Trim), nil
+		return applySourceTransforms(value, spec)
 	case "file":
 		path, err := expandPath(spec.Path)
 		if err != nil {
@@ -242,7 +250,7 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		if err != nil {
 			return nil, fmt.Errorf("%w: read file %q: %v", ErrExecution, path, err)
 		}
-		return maybeTrim(string(content), spec.Trim), nil
+		return applySourceTransforms(string(content), spec)
 	case "secret":
 		if strings.TrimSpace(r.site) == "" {
 			return nil, fmt.Errorf("%w: secret source requires site context", ErrConfig)
@@ -262,7 +270,7 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		if err != nil {
 			return nil, err
 		}
-		return maybeTrimValue(value, spec.Trim), nil
+		return applySourceTransforms(value, spec)
 	case "shell":
 		timeout := 5 * time.Second
 		if spec.TimeoutMS > 0 {
@@ -283,7 +291,7 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 			}
 			return nil, fmt.Errorf("%w: shell command failed: %s", ErrExecution, message)
 		}
-		return maybeTrim(stdout.String(), spec.Trim), nil
+		return applySourceTransforms(stdout.String(), spec)
 	case "state":
 		state := r.state
 		if r.states != nil {
@@ -302,10 +310,25 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		if !ok {
 			return nil, fmt.Errorf("%w: state key %q not found", ErrExecution, spec.Key)
 		}
-		return maybeTrim(value, spec.Trim), nil
+		return applySourceTransforms(value, spec)
 	default:
 		return nil, fmt.Errorf("%w: unsupported source %q", ErrConfig, spec.From)
 	}
+}
+
+func applySourceTransforms(value any, spec sourceSpec) (any, error) {
+	return applySourcePrefix(maybeTrimValue(value, spec.Trim), spec)
+}
+
+func applySourcePrefix(value any, spec sourceSpec) (any, error) {
+	if spec.Prefix == nil {
+		return value, nil
+	}
+	asString, ok := value.(string)
+	if !ok {
+		return nil, fmt.Errorf("%w: prefix requires a string result from %q source, got %T", ErrExecution, spec.From, value)
+	}
+	return *spec.Prefix + asString, nil
 }
 
 func expandPath(path string) (string, error) {

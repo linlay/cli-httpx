@@ -113,20 +113,24 @@ Cookie = { from = "file", path = "~/.local/secret/httpx/jira.example.com.cookie"
 Cookie = { from = "secret", key = "cookie", trim = true }
 ```
 
-平台、CI 或容器已经注入的短期凭证可以直接从环境变量读取：
+平台、CI 或容器已经注入的短期凭证可以直接从环境变量读取。环境变量如果保存的是
+裸 access token，可以用 `prefix` 生成标准的 Authorization header：
 
 ```bash
-export HTTPX_AUTHORIZATION='Bearer ...'
+export HTTPX_ACCESS_TOKEN='...'
 ```
 
 ```toml
 [headers]
-Authorization = { from = "env", key = "HTTPX_AUTHORIZATION", trim = true }
+Authorization = { from = "env", key = "HTTPX_ACCESS_TOKEN", trim = true, prefix = "Bearer " }
 ```
 
 `env` 只读取 `key` 显式指定的变量；变量未设置时请求失败，已经设置为空字符串时按空值处理。
-可选的 `trim = true` 会去掉首尾空白。普通 `inspect` 不读取环境变量并显示为 `***`，只有
-`run` 或 `inspect --reveal` 才解析真实值。配置不会对普通字符串执行 `${VAR}` 插值。
+可选的 `trim = true` 会去掉首尾空白；可选字符串字段 `prefix` 随后无条件添加到解析结果前。
+`prefix` 适用于 `param`、`env`、`file`、`secret`、`shell` 和 `state`；解析结果不是字符串时失败。
+它不检测或去重已有前缀，空原值也会得到仅包含 `prefix` 的结果。普通 `inspect` 不读取动态
+凭证并将整个值显示为 `***`，只有 `run` 或 `inspect --reveal` 才解析并展示最终值。配置不会
+对普通字符串执行 `${VAR}` 插值。
 
 持久静态凭证仍推荐使用 `secret` / `file`；密码管理器等外部命令可通过 `shell` 动态读取。
 

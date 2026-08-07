@@ -56,7 +56,7 @@ base_url = "https://example.com"
 
 [actions.get]
 description = "Fetch home"
-path = { from = "env", key = "HTTPX_PATH" }
+path = { from = "env", key = "HTTPX_PATH", prefix = "/" }
 `)
 
 	if _, err := loadConfig(configPath); err != nil {
@@ -72,6 +72,7 @@ func TestParseEnvSourceRejectsInvalidFields(t *testing.T) {
 		"empty_key":   {"from": "env", "key": ""},
 		"scope":       {"from": "env", "key": "HTTPX_TOKEN", "scope": "global"},
 		"default":     {"from": "env", "key": "HTTPX_TOKEN", "default": "fallback"},
+		"prefix_type": {"from": "env", "key": "HTTPX_TOKEN", "prefix": true},
 		"unknown":     {"from": "env", "key": "HTTPX_TOKEN", "unknown": true},
 	}
 
@@ -81,6 +82,19 @@ func TestParseEnvSourceRejectsInvalidFields(t *testing.T) {
 				t.Fatalf("expected config error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestParseLiteralSourceRejectsPrefix(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := parseSourceSpec(map[string]any{
+		"from":   "literal",
+		"value":  "token",
+		"prefix": "Bearer ",
+	})
+	if err == nil || !errors.Is(err, ErrConfig) {
+		t.Fatalf("expected config error, got %v", err)
 	}
 }
 
@@ -537,6 +551,69 @@ func TestResolverSupportsEnvFileSecretShellAndState(t *testing.T) {
 	}
 }
 
+func TestResolverAppliesPrefixToStringSourcesAfterTrim(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HTTPX_TEST_PREFIX_ENV", " token-value \n")
+	filePath := filepath.Join(tmpDir, "token.txt")
+	if err := os.WriteFile(filePath, []byte(" token-value \n"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	secretDir := filepath.Join(tmpDir, "secret")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatalf("mkdir secret: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, "demo.json"), []byte(`{"token":" token-value \n"}`), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	r := resolver{
+		state:     &profileState{Values: map[string]string{"token": " token-value \n"}},
+		reveal:    true,
+		params:    map[string]string{"token": " token-value \n"},
+		site:      "demo",
+		secretDir: secretDir,
+	}
+	cases := map[string]map[string]any{
+		"param":  {"from": "param", "key": "token", "trim": true, "prefix": "Bearer "},
+		"env":    {"from": "env", "key": "HTTPX_TEST_PREFIX_ENV", "trim": true, "prefix": "Bearer "},
+		"file":   {"from": "file", "path": filePath, "trim": true, "prefix": "Bearer "},
+		"secret": {"from": "secret", "key": "token", "trim": true, "prefix": "Bearer "},
+		"shell":  {"from": "shell", "cmd": "printf ' token-value \\n'", "trim": true, "prefix": "Bearer "},
+		"state":  {"from": "state", "key": "token", "trim": true, "prefix": "Bearer "},
+	}
+
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			value, err := r.resolveAny(context.Background(), input)
+			if err != nil {
+				t.Fatalf("resolve failed: %v", err)
+			}
+			if value != "Bearer token-value" {
+				t.Fatalf("unexpected prefixed value: %#v", value)
+			}
+		})
+	}
+}
+
+func TestResolverPrefixRequiresStringResult(t *testing.T) {
+	r := resolver{
+		reveal: true,
+		params: map[string]string{"count": "42"},
+	}
+	_, err := r.resolveAny(context.Background(), map[string]any{
+		"from":    "param",
+		"key":     "count",
+		"default": 0,
+		"prefix":  "items-",
+	})
+	if err == nil || !errors.Is(err, ErrExecution) {
+		t.Fatalf("expected execution error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "prefix requires a string result") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolverEnvironmentVariableSemantics(t *testing.T) {
 	r := resolver{reveal: true}
 	t.Setenv("HTTPX_TEST_EMPTY_ENV", "")
@@ -550,6 +627,17 @@ func TestResolverEnvironmentVariableSemantics(t *testing.T) {
 	}
 	if value != "" {
 		t.Fatalf("expected explicitly empty environment variable, got %#v", value)
+	}
+	value, err = r.resolveAny(context.Background(), map[string]any{
+		"from":   "env",
+		"key":    "HTTPX_TEST_EMPTY_ENV",
+		"prefix": "Bearer ",
+	})
+	if err != nil {
+		t.Fatalf("resolve prefixed empty environment variable: %v", err)
+	}
+	if value != "Bearer " {
+		t.Fatalf("expected prefix-only value, got %#v", value)
 	}
 
 	const missingKey = "HTTPX_TEST_ENV_DEFINITELY_MISSING"
@@ -566,8 +654,9 @@ func TestResolverEnvironmentVariableSemantics(t *testing.T) {
 	})
 
 	_, err = r.resolveAny(context.Background(), map[string]any{
-		"from": "env",
-		"key":  missingKey,
+		"from":   "env",
+		"key":    missingKey,
+		"prefix": "Bearer ",
 	})
 	if err == nil || !errors.Is(err, ErrExecution) {
 		t.Fatalf("expected missing environment variable execution error, got %v", err)
@@ -1651,6 +1740,38 @@ path = "/ping"
 	}
 }
 
+func TestRunSendsPrefixedEnvironmentAuthorization(t *testing.T) {
+	var gotAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("HTTPX_TEST_ACCESS_TOKEN", " fake-jwt \n")
+
+	configDir := writeProfileConfig(t, "demo", fmt.Sprintf(`
+version = 1
+description = "Demo site"
+base_url = %q
+
+[headers]
+Authorization = { from = "env", key = "HTTPX_TEST_ACCESS_TOKEN", trim = true, prefix = "Bearer " }
+
+[actions.secure]
+description = "Call authenticated endpoint"
+path = "/secure"
+expect_status = 200
+`, server.URL))
+
+	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "run", "demo", "secure"})
+	if exitCode != ExitSuccess {
+		t.Fatalf("run failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
+	}
+	if gotAuthorization != "Bearer fake-jwt" {
+		t.Fatalf("unexpected Authorization header: %q", gotAuthorization)
+	}
+}
+
 func TestCompileRejectsRegexExtractorGroupOutOfRange(t *testing.T) {
 	t.Parallel()
 
@@ -2010,7 +2131,7 @@ base_url = "https://example.com"
 [actions.secret]
 description = "Environment-backed request"
 path = "/secret"
-headers = { Authorization = { from = "env", key = "HTTPX_TEST_INSPECT_AUTHORIZATION", trim = true } }
+headers = { Authorization = { from = "env", key = "HTTPX_TEST_INSPECT_AUTHORIZATION", trim = true, prefix = "Bearer " } }
 `)
 
 	stdout, stderr, exitCode := runMain(t, []string{"--config", configDir, "inspect", "demo", "secret"})
@@ -2025,7 +2146,7 @@ headers = { Authorization = { from = "env", key = "HTTPX_TEST_INSPECT_AUTHORIZAT
 		t.Fatalf("expected redacted environment header, got %#v", redacted.Headers)
 	}
 
-	t.Setenv(envKey, " Bearer inspect-secret \n")
+	t.Setenv(envKey, " fake-jwt \n")
 	stdout, stderr, exitCode = runMain(t, []string{"--config", configDir, "inspect", "--reveal", "demo", "secret"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("revealed inspect failed: exit=%d stderr=%s stdout=%s", exitCode, stderr, stdout)
@@ -2034,7 +2155,7 @@ headers = { Authorization = { from = "env", key = "HTTPX_TEST_INSPECT_AUTHORIZAT
 	if err := json.Unmarshal([]byte(stdout), &revealed); err != nil {
 		t.Fatalf("unmarshal revealed inspect output: %v", err)
 	}
-	if revealed.Headers["Authorization"] != "Bearer inspect-secret" {
+	if revealed.Headers["Authorization"] != "Bearer fake-jwt" {
 		t.Fatalf("unexpected revealed environment header: %#v", revealed.Headers)
 	}
 }
