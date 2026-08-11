@@ -522,18 +522,27 @@ func writeExamplesSection(w io.Writer, examples []string) error {
 
 func buildActionExamples(detail actionDetail) []string {
 	base := fmt.Sprintf("httpx run %s %s", detail.Site, detail.Name)
+	requiredParamArgs := buildRequiredParamExampleArgs(detail.Params)
 	paramArgs := buildParamExampleArgs(detail.Params)
 	extractArg := buildExtractExampleArg(detail.Extracts)
 
-	candidates := []string{base}
+	primary := base
+	if len(requiredParamArgs) > 0 {
+		primary += " " + strings.Join(requiredParamArgs, " ")
+	}
+	candidates := []string{primary}
+	withAllParams := base
 	if len(paramArgs) > 0 {
-		candidates = append(candidates, base+" "+strings.Join(paramArgs, " "))
+		withAllParams += " " + strings.Join(paramArgs, " ")
+		if withAllParams != primary {
+			candidates = append(candidates, withAllParams)
+		}
 	}
 	if extractArg != "" {
-		candidates = append(candidates, base+" "+extractArg)
+		candidates = append(candidates, primary+" "+extractArg)
 	}
-	if len(paramArgs) > 0 && extractArg != "" {
-		candidates = append(candidates, base+" "+strings.Join(paramArgs, " ")+" "+extractArg)
+	if withAllParams != primary && extractArg != "" {
+		candidates = append(candidates, withAllParams+" "+extractArg)
 	}
 
 	seen := make(map[string]struct{}, len(candidates))
@@ -546,6 +555,22 @@ func buildActionExamples(detail actionDetail) []string {
 		examples = append(examples, candidate)
 	}
 	return examples
+}
+
+func buildRequiredParamExampleArgs(specs []actionInputSpec) []string {
+	args := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		if !spec.Required {
+			continue
+		}
+		value := renderParamExampleValue(spec)
+		arg := spec.Name + "=" + value
+		if needsShellQuoting(arg) {
+			arg = shellSingleQuote(arg)
+		}
+		args = append(args, "--param "+arg)
+	}
+	return args
 }
 
 func buildParamExampleArgs(specs []actionInputSpec) []string {

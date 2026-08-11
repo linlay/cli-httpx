@@ -207,12 +207,16 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 			return nil, err
 		}
 	}
-	if !r.reveal && spec.From != "literal" {
-		if spec.From == "param" {
-			if _, ok := r.params[spec.Key]; !ok && spec.Default != nil {
-				return applySourceTransforms(spec.Default, spec)
-			}
+	if !r.reveal && spec.From == "param" {
+		if _, ok := r.params[spec.Key]; ok {
+			return redactedValue, nil
 		}
+		if spec.Default != nil {
+			return applySourceTransforms(spec.Default, spec)
+		}
+		return nil, fmt.Errorf("%w: parameter %q not provided", ErrExecution, spec.Key)
+	}
+	if !r.reveal && spec.From != "literal" {
 		return redactedValue, nil
 	}
 

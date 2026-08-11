@@ -1707,6 +1707,54 @@ func TestResolverReportsMissingParamAndShellTimeout(t *testing.T) {
 	}
 }
 
+func TestResolverReportsMissingParamBeforeInspectRedaction(t *testing.T) {
+	t.Parallel()
+
+	r := resolver{
+		state:  &profileState{Values: map[string]string{}},
+		reveal: false,
+	}
+	if _, err := r.resolveAny(context.Background(), map[string]any{
+		"from": "param",
+		"key":  "request_id",
+	}); err == nil || !errors.Is(err, ErrExecution) || !strings.Contains(err.Error(), `parameter "request_id" not provided`) {
+		t.Fatalf("expected actionable missing param error during inspect, got %v", err)
+	}
+	value, err := r.resolveAny(context.Background(), map[string]any{
+		"from":    "param",
+		"key":     "arguments_json",
+		"default": "{}",
+	})
+	if err != nil || value != "{}" {
+		t.Fatalf("expected safe param default during inspect, got value=%#v err=%v", value, err)
+	}
+}
+
+func TestActionExamplesStartWithAllRequiredParams(t *testing.T) {
+	t.Parallel()
+
+	examples := buildActionExamples(actionDetail{
+		Site: "online-pptx-bridge",
+		Name: "inspect",
+		Params: []actionInputSpec{
+			{Name: "arguments_json", Required: false, Example: "{}"},
+			{Name: "request_id", Required: true, Example: "tool-inspect-1"},
+		},
+	})
+	if len(examples) < 2 {
+		t.Fatalf("expected required-only and optional examples, got %#v", examples)
+	}
+	expected := "httpx run online-pptx-bridge inspect --param request_id=tool-inspect-1"
+	if examples[0] != expected {
+		t.Fatalf("expected first runnable example %q, got %#v", expected, examples)
+	}
+	for _, example := range examples {
+		if example == "httpx run online-pptx-bridge inspect" {
+			t.Fatalf("examples must not contain a command missing request_id: %#v", examples)
+		}
+	}
+}
+
 func TestRunUsesDefaultSiteConfigPath(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("pong"))
@@ -2979,7 +3027,7 @@ path = "/search"
 	if !strings.Contains(stdout, `group  string  no        -        Filter group  "GROUP_A"`) {
 		t.Fatalf("expected extract row in action text: %q", stdout)
 	}
-	if !strings.Contains(stdout, "\nExamples:\n") || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42`) || !strings.Contains(stdout, `httpx run alpha profile --extract '{"group":"GROUP_A"}'`) {
+	if !strings.Contains(stdout, "\nExamples:\n") || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42`) || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42 --extract '{"group":"GROUP_A"}'`) {
 		t.Fatalf("expected examples section in action text: %q", stdout)
 	}
 
