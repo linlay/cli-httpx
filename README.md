@@ -180,6 +180,58 @@ CLI 现在使用 Cobra 风格的根命令和子命令组织；帮助信息统一
 - `--timeout <duration>`：覆盖配置超时
 - `--reveal`：仅 `inspect` 下显示真实敏感值
 
+## 文件上传与下载
+
+action 可以用 `multipart` 声明流式 `multipart/form-data` 请求。`multipart` 与 `body`、`form`
+互斥；普通字段使用 `value`，文件字段使用 `file`：
+
+```toml
+[actions.upload]
+description = "上传 DOCX"
+method = "POST"
+path = "/api/v1/documents/upload"
+retries = 0
+multipart = [
+  { name = "title", value = { from = "param", key = "title", default = "" } },
+  { name = "file", file = { from = "param", key = "file_path" }, content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document", max_bytes = 209715200 }
+]
+expect_status = 201
+```
+
+```bash
+httpx inspect online-docx-bridge upload --param file_path=/absolute/report.docx --param title=审阅报告
+httpx run online-docx-bridge upload --param file_path=/absolute/report.docx --param title=审阅报告
+```
+
+文件名默认取本地路径 basename，也可以通过 `filename` 声明静态值或动态来源。文件名不能包含
+路径分隔符或控制字符。发送前会确认路径是普通文件并检查 `max_bytes`；`max_bytes = 0` 时使用
+200 MiB 默认上限。请求采用固定 boundary 和 `Content-Length` 流式发送，每次重试都会重新打开
+并重新检查文件。普通 `inspect` 不读取文件，也不暴露动态路径；`inspect --reveal` 只展示路径
+与部件元数据，不读取文件内容。没有幂等键的上传应配置 `retries = 0`。
+
+下载响应使用 `download` 写入本地文件：
+
+```toml
+[actions.download]
+description = "下载 DOCX"
+method = "GET"
+path = { from = "param", key = "path" }
+expect_status = 200
+download = { path = { from = "param", key = "output_path" }, overwrite = { from = "param", key = "overwrite", default = false }, max_bytes = 209715200 }
+```
+
+```bash
+httpx run online-docx-bridge download \
+  --param path=/api/v1/documents/00000000-0000-0000-0000-000000000000/download \
+  --param output_path=/absolute/report.docx
+```
+
+下载要求目标父目录已经存在。HTTP 状态符合 `expect_status` 后，响应才会流式写入目标目录中的
+临时文件，同时计算大小和 SHA-256；同步完成后再原子发布。默认拒绝覆盖已有目标，只有
+`--param overwrite=true` 才允许替换。超时、断线、异常状态或超过 `max_bytes` 时会清理临时文件，
+原目标保持不变。`--format text` 输出最终路径；JSON envelope 的 `download` 字段包含 `path`、
+`size_bytes`、`sha256` 和 `content_type`。下载 action 不能同时配置 response extractor 或 `save`。
+
 如果响应体很大，推荐在 action 里配置扁平的 `extract_*` 字段，先把有用字段裁剪出来再交给智能体：
 
 ```toml

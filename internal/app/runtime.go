@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -23,26 +22,27 @@ type Runtime struct {
 }
 
 type compiledRequest struct {
-	Site         string            `json:"site"`
-	Action       string            `json:"action"`
-	Description  string            `json:"description"`
-	Method       string            `json:"method"`
-	URL          string            `json:"url"`
-	Proxy        string            `json:"proxy,omitempty"`
-	Headers      map[string]string `json:"headers,omitempty"`
-	Cookies      map[string]string `json:"cookies,omitempty"`
-	Body         any               `json:"body,omitempty"`
-	TimeoutMS    int64             `json:"timeout_ms"`
-	Retries      int               `json:"retries"`
-	ExpectStatus []int             `json:"expect_status,omitempty"`
-	Extractor    *extractorSpec    `json:"extractor,omitempty"`
-	ExtractInput map[string]any    `json:"extract_input,omitempty"`
-	Params       []actionInputSpec `json:"params"`
-	Extracts     []actionInputSpec `json:"extracts"`
-	Save         map[string]string `json:"save,omitempty"`
+	Site         string                  `json:"site"`
+	Action       string                  `json:"action"`
+	Description  string                  `json:"description"`
+	Method       string                  `json:"method"`
+	URL          string                  `json:"url"`
+	Proxy        string                  `json:"proxy,omitempty"`
+	Headers      map[string]string       `json:"headers,omitempty"`
+	Cookies      map[string]string       `json:"cookies,omitempty"`
+	Body         any                     `json:"body,omitempty"`
+	Multipart    []compiledMultipartPart `json:"multipart,omitempty"`
+	Download     *compiledDownload       `json:"download,omitempty"`
+	TimeoutMS    int64                   `json:"timeout_ms"`
+	Retries      int                     `json:"retries"`
+	ExpectStatus []int                   `json:"expect_status,omitempty"`
+	Extractor    *extractorSpec          `json:"extractor,omitempty"`
+	ExtractInput map[string]any          `json:"extract_input,omitempty"`
+	Params       []actionInputSpec       `json:"params"`
+	Extracts     []actionInputSpec       `json:"extracts"`
+	Save         map[string]string       `json:"save,omitempty"`
 
-	BodyBytes         []byte             `json:"-"`
-	ContentType       string             `json:"-"`
+	OpenBody          requestBodyOpener  `json:"-"`
 	compiledExtractor *compiledExtractor `json:"-"`
 }
 
@@ -286,6 +286,8 @@ func (rt *Runtime) compileActionWithStates(req commandRequest, cfg *configFile, 
 
 	var bodyValue any
 	var bodyBytes []byte
+	var multipartParts []compiledMultipartPart
+	var openBody requestBodyOpener
 	contentType := ""
 	if len(merged.Form) > 0 {
 		form := url.Values{}
@@ -315,6 +317,18 @@ func (rt *Runtime) compileActionWithStates(req commandRequest, cfg *configFile, 
 		if err != nil {
 			return nil, nil, nil, err
 		}
+	} else if len(merged.Multipart) > 0 {
+		multipartParts, openBody, contentType, err = compileMultipart(ctx, res, merged.Multipart)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if openBody == nil {
+		openBody = staticBodyOpener(bodyBytes)
+	}
+	download, err := compileDownload(ctx, res, merged.Download, req.Command == commandInspect && !req.Options.Reveal)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	if _, ok := headers["Content-Type"]; !ok && contentType != "" {
@@ -340,6 +354,8 @@ func (rt *Runtime) compileActionWithStates(req commandRequest, cfg *configFile, 
 		Headers:           headers,
 		Cookies:           cookies,
 		Body:              bodyValue,
+		Multipart:         multipartParts,
+		Download:          download,
 		TimeoutMS:         merged.Timeout.Milliseconds(),
 		Retries:           merged.Retries,
 		ExpectStatus:      merged.ExpectStatus,
@@ -348,8 +364,7 @@ func (rt *Runtime) compileActionWithStates(req commandRequest, cfg *configFile, 
 		Params:            cloneActionInputSpecs(merged.Params),
 		Extracts:          cloneActionInputSpecs(merged.Extracts),
 		Save:              merged.Save,
-		BodyBytes:         bodyBytes,
-		ContentType:       contentType,
+		OpenBody:          openBody,
 		compiledExtractor: compiledExtractor,
 	}, jar, state, nil
 }
@@ -493,8 +508,7 @@ func (rt *Runtime) compileLoginWithStates(req commandRequest, cfg *configFile, s
 		Params:            nil,
 		Extracts:          nil,
 		Save:              merged.Save,
-		BodyBytes:         bodyBytes,
-		ContentType:       contentType,
+		OpenBody:          staticBodyOpener(bodyBytes),
 		compiledExtractor: compiledExtractor,
 	}, jar, state, nil
 }
@@ -697,10 +711,21 @@ func redactProxyURL(raw string) string {
 }
 
 func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled *compiledRequest, jar *persistentJar, state *profileState) (requestOutcome, bool, error) {
-	request, err := http.NewRequest(compiled.Method, compiled.URL, bytes.NewReader(compiled.BodyBytes))
+	if compiled.Download != nil {
+		if err := preflightDownload(compiled.Download); err != nil {
+			return requestOutcome{}, false, err
+		}
+	}
+	body, contentLength, err := compiled.OpenBody()
 	if err != nil {
+		return requestOutcome{}, false, err
+	}
+	request, err := http.NewRequest(compiled.Method, compiled.URL, body)
+	if err != nil {
+		_ = body.Close()
 		return requestOutcome{}, false, fmt.Errorf("%w: build request: %v", ErrExecution, err)
 	}
+	request.ContentLength = contentLength
 	for key, value := range compiled.Headers {
 		request.Header.Set(key, value)
 	}
@@ -716,6 +741,11 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 		return requestOutcome{}, true, fmt.Errorf("%w: send request: %v", ErrExecution, err)
 	}
 	defer response.Body.Close()
+	state.Cookies = jar.Snapshot()
+
+	if compiled.Download != nil {
+		return rt.performDownload(req, compiled, response, time.Since(start).Milliseconds())
+	}
 
 	bodyBytes, err := io.ReadAll(response.Body)
 	if err != nil {
@@ -753,8 +783,6 @@ func (rt *Runtime) performOnce(client *http.Client, req commandRequest, compiled
 		updatedKeys = append(updatedKeys, key)
 	}
 	sort.Strings(updatedKeys)
-
-	state.Cookies = jar.Snapshot()
 
 	ok := matchesExpectedStatus(response.StatusCode, compiled.ExpectStatus)
 	bodyValue := decodedBody

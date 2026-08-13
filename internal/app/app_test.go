@@ -216,9 +216,13 @@ title = { from = "param", key = "title" }
 		t.Fatalf("loadConfig failed: %v", err)
 	}
 
-	fields, ok := cfg.Actions["create"].Body["fields"].(map[string]any)
+	actionBody, ok := cfg.Actions["create"].Body.(map[string]any)
 	if !ok {
-		t.Fatalf("expected nested body.fields map, got %#v", cfg.Actions["create"].Body["fields"])
+		t.Fatalf("expected body map, got %#v", cfg.Actions["create"].Body)
+	}
+	fields, ok := actionBody["fields"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested body.fields map, got %#v", actionBody["fields"])
 	}
 	project, ok := fields["project"].(map[string]any)
 	if !ok || project["key"] != "PRJ" {
@@ -1668,7 +1672,19 @@ form = { data = { user = "alice", secret = "secret", kind = "100", mode = "2" } 
 		t.Fatalf("compile failed: %v", err)
 	}
 
-	encodedBody := string(compiled.BodyBytes)
+	requestBody, contentLength, err := compiled.OpenBody()
+	if err != nil {
+		t.Fatalf("open compiled body failed: %v", err)
+	}
+	defer requestBody.Close()
+	encodedBytes, err := io.ReadAll(requestBody)
+	if err != nil {
+		t.Fatalf("read compiled body failed: %v", err)
+	}
+	if int64(len(encodedBytes)) != contentLength {
+		t.Fatalf("compiled body length mismatch: got %d, want %d", len(encodedBytes), contentLength)
+	}
+	encodedBody := string(encodedBytes)
 	if !strings.HasPrefix(encodedBody, "data=") {
 		t.Fatalf("expected form field named data, got %q", encodedBody)
 	}

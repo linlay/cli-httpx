@@ -59,8 +59,16 @@ type envelope struct {
 	DurationMS   int64               `json:"duration_ms,omitempty"`
 	Headers      map[string][]string `json:"headers,omitempty"`
 	Body         any                 `json:"body,omitempty"`
+	Download     *downloadResult     `json:"download,omitempty"`
 	StateUpdated []string            `json:"state_updated,omitempty"`
 	Error        *errorEnvelope      `json:"error,omitempty"`
+}
+
+type downloadResult struct {
+	Path        string `json:"path"`
+	SizeBytes   int64  `json:"size_bytes"`
+	SHA256      string `json:"sha256"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 type errorEnvelope struct {

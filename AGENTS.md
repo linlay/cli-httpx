@@ -71,6 +71,8 @@ CLI 框架约定：
 - `query`
 - `body`
 - `form`
+- `multipart`
+- `download`
 - `expect_status`
 - `extract_type`
 - `extract_expr`
@@ -91,6 +93,24 @@ CLI 框架约定：
 - `--extract` 只参与 extractor 执行
 - jq extractor 通过 `.extract` 读取该输入
 - regex extractor 通过 `{{extract.key}}` 模板占位符读取该输入
+
+请求体约定：
+
+- `body`、`form`、`multipart` 三者互斥
+- 固定 JSON/form 请求体和 multipart 请求体都编译成可重复打开的 body factory
+- multipart 保持声明顺序、固定 boundary 和 `Content-Length`，文件不整体读入内存
+- 每次尝试都会重新打开并校验 multipart 文件，因此重试不会复用已消费的 reader
+- multipart 文件必须是普通文件；文件名禁止路径分隔符和控制字符
+- 普通 `inspect` 不读取 multipart 文件并隐藏动态路径；`inspect --reveal` 也只展示元数据
+
+下载约定：
+
+- `download` 是独立的流式响应路径，不能与 response extractor 或依赖正文的 `save` 同时使用
+- 仅在状态码符合 `expect_status` 后创建临时文件；异常响应正文最多缓冲 1 MiB
+- 临时文件与目标处于同一目录，下载时检查大小并计算 SHA-256，完成 `fsync` 后原子发布
+- 默认 no-clobber；显式 `overwrite=true` 才覆盖，Unix 与 Windows 使用各自的原子发布实现
+- 失败、断线、超限时删除临时文件并保留原目标；下载父目录必须预先存在
+- `--format text` 返回最终路径，JSON envelope 用 `download` 返回路径、大小、哈希和内容类型
 
 存储作用域约定：
 

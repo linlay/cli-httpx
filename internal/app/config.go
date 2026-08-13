@@ -69,8 +69,10 @@ type action struct {
 	Headers        map[string]any    `toml:"headers"`
 	Cookies        map[string]any    `toml:"cookies"`
 	Query          map[string]any    `toml:"query"`
-	Body           map[string]any    `toml:"body"`
+	Body           any               `toml:"body"`
 	Form           map[string]any    `toml:"form"`
+	Multipart      []multipartPart   `toml:"multipart"`
+	Download       *downloadConfig   `toml:"download"`
 	ExpectStatus   any               `toml:"expect_status"`
 	ExtractType    string            `toml:"extract_type"`
 	ExtractExpr    string            `toml:"extract_expr"`
@@ -80,6 +82,21 @@ type action struct {
 	Params         []actionInputSpec `toml:"params"`
 	Extracts       []actionInputSpec `toml:"extracts"`
 	Save           map[string]string `toml:"save"`
+}
+
+type multipartPart struct {
+	Name        string `toml:"name"`
+	Value       any    `toml:"value"`
+	File        any    `toml:"file"`
+	Filename    any    `toml:"filename"`
+	ContentType string `toml:"content_type"`
+	MaxBytes    int64  `toml:"max_bytes"`
+}
+
+type downloadConfig struct {
+	Path      any   `toml:"path"`
+	Overwrite any   `toml:"overwrite"`
+	MaxBytes  int64 `toml:"max_bytes"`
 }
 
 type mergedAction struct {
@@ -95,6 +112,8 @@ type mergedAction struct {
 	Query        map[string]any
 	Body         any
 	Form         map[string]any
+	Multipart    []multipartPart
+	Download     *downloadConfig
 	ExpectStatus []int
 	Extractor    *extractorSpec
 	Params       []actionInputSpec
@@ -168,8 +187,32 @@ func validateConfig(cfg *configFile) error {
 		if err := validateActionPath("actions."+actionName+".path", act.Path); err != nil {
 			return err
 		}
-		if act.Body != nil && len(act.Form) > 0 {
-			return fmt.Errorf("%w: actions.%s cannot set both body and form", ErrConfig, actionName)
+		bodyKinds := 0
+		if act.Body != nil {
+			bodyKinds++
+			if _, ok := act.Body.(map[string]any); !ok {
+				return fmt.Errorf("%w: actions.%s.body must be an object", ErrConfig, actionName)
+			}
+		}
+		if len(act.Form) > 0 {
+			bodyKinds++
+		}
+		if act.Multipart != nil {
+			bodyKinds++
+		}
+		if bodyKinds > 1 {
+			return fmt.Errorf("%w: actions.%s body, form, and multipart are mutually exclusive", ErrConfig, actionName)
+		}
+		if act.Multipart != nil {
+			if len(act.Multipart) == 0 {
+				return fmt.Errorf("%w: actions.%s.multipart must contain at least one part", ErrConfig, actionName)
+			}
+			for index, part := range act.Multipart {
+				prefix := fmt.Sprintf("actions.%s.multipart[%d]", actionName, index)
+				if err := validateMultipartPart(prefix, part); err != nil {
+					return err
+				}
+			}
 		}
 		if _, err := normalizeExpectStatus(act.ExpectStatus); err != nil {
 			return fmt.Errorf("%w: actions.%s.expect_status: %v", ErrConfig, actionName, err)
@@ -180,6 +223,17 @@ func validateConfig(cfg *configFile) error {
 		}
 		if _, err := compileExtractor(actionName, extractor, nil); err != nil {
 			return err
+		}
+		if act.Download != nil {
+			if err := validateDownloadConfig("actions."+actionName+".download", act.Download); err != nil {
+				return err
+			}
+			if extractor != nil {
+				return fmt.Errorf("%w: actions.%s.download cannot be combined with a response extractor", ErrConfig, actionName)
+			}
+			if len(act.Save) > 0 {
+				return fmt.Errorf("%w: actions.%s.download cannot be combined with save", ErrConfig, actionName)
+			}
 		}
 		if err := validateActionInputSpecs("actions."+actionName+".params", act.Params); err != nil {
 			return err
@@ -235,7 +289,7 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 
 	method := strings.ToUpper(strings.TrimSpace(act.Method))
 	if method == "" {
-		if act.Body != nil || len(act.Form) > 0 {
+		if act.Body != nil || len(act.Form) > 0 || len(act.Multipart) > 0 {
 			method = "POST"
 		} else {
 			method = "GET"
@@ -260,12 +314,84 @@ func mergeAction(actionName string, cfg *configFile, act action, timeoutOverride
 		Query:        mergeMap(cfg.Query, act.Query),
 		Body:         cloneJSONValue(act.Body),
 		Form:         copyMap(act.Form),
+		Multipart:    cloneMultipartParts(act.Multipart),
+		Download:     cloneDownloadConfig(act.Download),
 		ExpectStatus: expectStatus,
 		Extractor:    extractor,
 		Params:       cloneActionInputSpecs(act.Params),
 		Extracts:     cloneActionInputSpecs(act.Extracts),
 		Save:         copyStringMap(act.Save),
 	}, nil
+}
+
+func validateMultipartPart(prefix string, part multipartPart) error {
+	if strings.TrimSpace(part.Name) == "" {
+		return fmt.Errorf("%w: %s.name is required", ErrConfig, prefix)
+	}
+	if hasControlCharacter(part.Name) {
+		return fmt.Errorf("%w: %s.name contains a control character", ErrConfig, prefix)
+	}
+	if (part.Value == nil) == (part.File == nil) {
+		return fmt.Errorf("%w: %s must set exactly one of value or file", ErrConfig, prefix)
+	}
+	if part.MaxBytes < 0 {
+		return fmt.Errorf("%w: %s.max_bytes cannot be negative", ErrConfig, prefix)
+	}
+	if part.Value != nil && (part.Filename != nil || strings.TrimSpace(part.ContentType) != "" || part.MaxBytes != 0) {
+		return fmt.Errorf("%w: %s filename, content_type, and max_bytes require file", ErrConfig, prefix)
+	}
+	return nil
+}
+
+func validateDownloadConfig(prefix string, download *downloadConfig) error {
+	if download == nil {
+		return nil
+	}
+	if download.Path == nil {
+		return fmt.Errorf("%w: %s.path is required", ErrConfig, prefix)
+	}
+	if download.MaxBytes < 0 {
+		return fmt.Errorf("%w: %s.max_bytes cannot be negative", ErrConfig, prefix)
+	}
+	return nil
+}
+
+func hasControlCharacter(value string) bool {
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneMultipartParts(parts []multipartPart) []multipartPart {
+	if parts == nil {
+		return nil
+	}
+	out := make([]multipartPart, len(parts))
+	for index, part := range parts {
+		out[index] = multipartPart{
+			Name:        part.Name,
+			Value:       cloneJSONValue(part.Value),
+			File:        cloneJSONValue(part.File),
+			Filename:    cloneJSONValue(part.Filename),
+			ContentType: part.ContentType,
+			MaxBytes:    part.MaxBytes,
+		}
+	}
+	return out
+}
+
+func cloneDownloadConfig(download *downloadConfig) *downloadConfig {
+	if download == nil {
+		return nil
+	}
+	return &downloadConfig{
+		Path:      cloneJSONValue(download.Path),
+		Overwrite: cloneJSONValue(download.Overwrite),
+		MaxBytes:  download.MaxBytes,
+	}
 }
 
 func validateLoginConfig(login *loginConfig) error {
