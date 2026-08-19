@@ -251,9 +251,11 @@ httpx inspect <site> <action>
 风险和约束：
 
 - `env` 只读取配置中 `key` 显式指定的变量，不做 `${VAR}` 字符串插值；变量缺失时失败
-- `param`、`env`、`file`、`secret`、`shell` 和 `state` 支持可选字符串字段 `prefix`
-- `prefix` 在现有类型转换和 `trim` 之后无条件添加；解析结果不是字符串时失败，不检测或去重已有前缀
-- 普通 `inspect` 对带 `prefix` 的动态值仍整体输出 `***`，`inspect --reveal` 才显示组合后的值
+- `param`、`env`、`file`、`secret`、`shell` 和 `state` 支持可选字符串字段 `pattern`、`prefix` 和 `suffix`
+- 固定转换顺序为现有类型转换、`trim`、`pattern` 全值校验、`prefix` + `suffix`
+- `pattern` 使用 Go RE2 且由实现强制匹配完整原值；错误不得回显动态值
+- `prefix` / `suffix` 不检测或去重已有内容；非字符串结果必须失败
+- 普通 `inspect` 对动态值仍整体输出 `***`，`inspect --reveal` 才显示转换后的值
 - 静态凭证仍推荐使用 `secret` / `file`，注入式短期凭证可使用 `env`
 - `shell` 依赖本机环境，超时或命令失败会导致执行失败
 - `state` 依赖本地 state 文件，适合会话复用，不适合作为跨环境共享机制

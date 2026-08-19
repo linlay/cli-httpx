@@ -68,12 +68,16 @@ func TestParseEnvSourceRejectsInvalidFields(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]map[string]any{
-		"missing_key": {"from": "env"},
-		"empty_key":   {"from": "env", "key": ""},
-		"scope":       {"from": "env", "key": "HTTPX_TOKEN", "scope": "global"},
-		"default":     {"from": "env", "key": "HTTPX_TOKEN", "default": "fallback"},
-		"prefix_type": {"from": "env", "key": "HTTPX_TOKEN", "prefix": true},
-		"unknown":     {"from": "env", "key": "HTTPX_TOKEN", "unknown": true},
+		"missing_key":     {"from": "env"},
+		"empty_key":       {"from": "env", "key": ""},
+		"scope":           {"from": "env", "key": "HTTPX_TOKEN", "scope": "global"},
+		"default":         {"from": "env", "key": "HTTPX_TOKEN", "default": "fallback"},
+		"prefix_type":     {"from": "env", "key": "HTTPX_TOKEN", "prefix": true},
+		"suffix_type":     {"from": "env", "key": "HTTPX_TOKEN", "suffix": true},
+		"pattern_type":    {"from": "env", "key": "HTTPX_TOKEN", "pattern": true},
+		"pattern_empty":   {"from": "env", "key": "HTTPX_TOKEN", "pattern": ""},
+		"pattern_invalid": {"from": "env", "key": "HTTPX_TOKEN", "pattern": "["},
+		"unknown":         {"from": "env", "key": "HTTPX_TOKEN", "unknown": true},
 	}
 
 	for name, input := range cases {
@@ -555,7 +559,7 @@ func TestResolverSupportsEnvFileSecretShellAndState(t *testing.T) {
 	}
 }
 
-func TestResolverAppliesPrefixToStringSourcesAfterTrim(t *testing.T) {
+func TestResolverAppliesPatternAndAffixesToStringSourcesAfterTrim(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HTTPX_TEST_PREFIX_ENV", " token-value \n")
 	filePath := filepath.Join(tmpDir, "token.txt")
@@ -578,12 +582,12 @@ func TestResolverAppliesPrefixToStringSourcesAfterTrim(t *testing.T) {
 		secretDir: secretDir,
 	}
 	cases := map[string]map[string]any{
-		"param":  {"from": "param", "key": "token", "trim": true, "prefix": "Bearer "},
-		"env":    {"from": "env", "key": "HTTPX_TEST_PREFIX_ENV", "trim": true, "prefix": "Bearer "},
-		"file":   {"from": "file", "path": filePath, "trim": true, "prefix": "Bearer "},
-		"secret": {"from": "secret", "key": "token", "trim": true, "prefix": "Bearer "},
-		"shell":  {"from": "shell", "cmd": "printf ' token-value \\n'", "trim": true, "prefix": "Bearer "},
-		"state":  {"from": "state", "key": "token", "trim": true, "prefix": "Bearer "},
+		"param":  {"from": "param", "key": "token", "trim": true, "pattern": "[a-z-]+", "prefix": "Bearer ", "suffix": "!"},
+		"env":    {"from": "env", "key": "HTTPX_TEST_PREFIX_ENV", "trim": true, "pattern": "[a-z-]+", "prefix": "Bearer ", "suffix": "!"},
+		"file":   {"from": "file", "path": filePath, "trim": true, "pattern": "[a-z-]+", "prefix": "Bearer ", "suffix": "!"},
+		"secret": {"from": "secret", "key": "token", "trim": true, "pattern": "[a-z-]+", "prefix": "Bearer ", "suffix": "!"},
+		"shell":  {"from": "shell", "cmd": "printf ' token-value \\n'", "trim": true, "pattern": "[a-z-]+", "prefix": "Bearer ", "suffix": "!"},
+		"state":  {"from": "state", "key": "token", "trim": true, "pattern": "[a-z-]+", "prefix": "Bearer ", "suffix": "!"},
 	}
 
 	for name, input := range cases {
@@ -592,8 +596,8 @@ func TestResolverAppliesPrefixToStringSourcesAfterTrim(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolve failed: %v", err)
 			}
-			if value != "Bearer token-value" {
-				t.Fatalf("unexpected prefixed value: %#v", value)
+			if value != "Bearer token-value!" {
+				t.Fatalf("unexpected transformed value: %#v", value)
 			}
 		})
 	}
@@ -613,8 +617,23 @@ func TestResolverPrefixRequiresStringResult(t *testing.T) {
 	if err == nil || !errors.Is(err, ErrExecution) {
 		t.Fatalf("expected execution error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "prefix requires a string result") {
+	if !strings.Contains(err.Error(), "prefix/suffix requires a string result") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolverPatternRequiresFullMatchWithoutLeakingValue(t *testing.T) {
+	const invalidValue = "prefix-550e8400-e29b-41d4-a716-446655440000-suffix"
+	t.Setenv("HTTPX_TEST_PARTIAL_DOCUMENT_ID", invalidValue)
+
+	_, err := (resolver{reveal: true}).resolveAny(context.Background(), map[string]any{
+		"from": "env", "key": "HTTPX_TEST_PARTIAL_DOCUMENT_ID", "pattern": "[0-9a-f-]{36}",
+	})
+	if err == nil || !errors.Is(err, ErrExecution) {
+		t.Fatalf("partial regex match must be rejected, got %v", err)
+	}
+	if strings.Contains(err.Error(), invalidValue) {
+		t.Fatalf("pattern error leaked dynamic value: %v", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ type sourceSpec struct {
 	TimeoutMS int
 	Trim      bool
 	Prefix    *string
+	Suffix    *string
+	Pattern   string
 	Value     any
 	Default   any
 	Scope     storageScope
@@ -93,7 +96,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		}
 		spec.Value = value
 	case "param":
-		if err := rejectUnknownSourceKeys(input, "from", "key", "default", "trim", "prefix"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "key", "default", "trim", "prefix", "suffix", "pattern"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -104,7 +107,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			spec.Default = value
 		}
 	case "env":
-		if err := rejectUnknownSourceKeys(input, "from", "key", "trim", "prefix"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "key", "trim", "prefix", "suffix", "pattern"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -112,7 +115,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, fmt.Errorf("%w: env source requires non-empty key", ErrConfig)
 		}
 	case "file":
-		if err := rejectUnknownSourceKeys(input, "from", "path", "trim", "prefix"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "path", "trim", "prefix", "suffix", "pattern"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Path, ok = input["path"].(string)
@@ -120,7 +123,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, fmt.Errorf("%w: file source requires non-empty path", ErrConfig)
 		}
 	case "secret":
-		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix", "suffix", "pattern"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -133,7 +136,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		}
 		spec.Scope = scope
 	case "shell":
-		if err := rejectUnknownSourceKeys(input, "from", "cmd", "timeout_ms", "trim", "prefix"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "cmd", "timeout_ms", "trim", "prefix", "suffix", "pattern"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Cmd, ok = input["cmd"].(string)
@@ -144,7 +147,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			spec.TimeoutMS = timeout
 		}
 	case "state":
-		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix", "suffix", "pattern"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -168,6 +171,23 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, fmt.Errorf("%w: dynamic source prefix must be a string", ErrConfig)
 		}
 		spec.Prefix = &prefix
+	}
+	if rawSuffix, ok := input["suffix"]; ok {
+		suffix, ok := rawSuffix.(string)
+		if !ok {
+			return sourceSpec{}, false, fmt.Errorf("%w: dynamic source suffix must be a string", ErrConfig)
+		}
+		spec.Suffix = &suffix
+	}
+	if rawPattern, ok := input["pattern"]; ok {
+		pattern, ok := rawPattern.(string)
+		if !ok || pattern == "" {
+			return sourceSpec{}, false, fmt.Errorf("%w: dynamic source pattern must be a non-empty string", ErrConfig)
+		}
+		if _, err := regexp.Compile(fullMatchPattern(pattern)); err != nil {
+			return sourceSpec{}, false, fmt.Errorf("%w: invalid dynamic source pattern: %v", ErrConfig, err)
+		}
+		spec.Pattern = pattern
 	}
 	return spec, true, nil
 }
@@ -231,9 +251,9 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 				if err != nil {
 					return nil, fmt.Errorf("%w: parameter %q: %v", ErrExecution, spec.Key, err)
 				}
-				return applySourcePrefix(coerced, spec)
+				return applySourceTransforms(coerced, spec)
 			}
-			return applySourcePrefix(value, spec)
+			return applySourceTransforms(value, spec)
 		}
 		if spec.Default != nil {
 			return applySourceTransforms(spec.Default, spec)
@@ -321,18 +341,42 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 }
 
 func applySourceTransforms(value any, spec sourceSpec) (any, error) {
-	return applySourcePrefix(maybeTrimValue(value, spec.Trim), spec)
+	value = maybeTrimValue(value, spec.Trim)
+	if spec.Pattern != "" {
+		asString, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: pattern requires a string result from %q source, got %T", ErrExecution, spec.From, value)
+		}
+		matched, err := regexp.MatchString(fullMatchPattern(spec.Pattern), asString)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid dynamic source pattern: %v", ErrConfig, err)
+		}
+		if !matched {
+			return nil, fmt.Errorf("%w: value from %q source does not match pattern", ErrExecution, spec.From)
+		}
+	}
+	return applySourceAffixes(value, spec)
 }
 
-func applySourcePrefix(value any, spec sourceSpec) (any, error) {
-	if spec.Prefix == nil {
+func applySourceAffixes(value any, spec sourceSpec) (any, error) {
+	if spec.Prefix == nil && spec.Suffix == nil {
 		return value, nil
 	}
 	asString, ok := value.(string)
 	if !ok {
-		return nil, fmt.Errorf("%w: prefix requires a string result from %q source, got %T", ErrExecution, spec.From, value)
+		return nil, fmt.Errorf("%w: prefix/suffix requires a string result from %q source, got %T", ErrExecution, spec.From, value)
 	}
-	return *spec.Prefix + asString, nil
+	if spec.Prefix != nil {
+		asString = *spec.Prefix + asString
+	}
+	if spec.Suffix != nil {
+		asString += *spec.Suffix
+	}
+	return asString, nil
+}
+
+func fullMatchPattern(pattern string) string {
+	return "^(?:" + pattern + ")\\z"
 }
 
 func expandPath(path string) (string, error) {

@@ -126,11 +126,19 @@ Authorization = { from = "env", key = "HTTPX_ACCESS_TOKEN", trim = true, prefix 
 ```
 
 `env` 只读取 `key` 显式指定的变量；变量未设置时请求失败，已经设置为空字符串时按空值处理。
-可选的 `trim = true` 会去掉首尾空白；可选字符串字段 `prefix` 随后无条件添加到解析结果前。
-`prefix` 适用于 `param`、`env`、`file`、`secret`、`shell` 和 `state`；解析结果不是字符串时失败。
-它不检测或去重已有前缀，空原值也会得到仅包含 `prefix` 的结果。普通 `inspect` 不读取动态
-凭证并将整个值显示为 `***`，只有 `run` 或 `inspect --reveal` 才解析并展示最终值。配置不会
-对普通字符串执行 `${VAR}` 插值。
+可选字符串转换按“读取或类型转换 → `trim` → `pattern` 全值校验 → `prefix` + `suffix`”执行：
+
+```toml
+[actions.session]
+path = { from = "env", key = "DOCUMENT_ID", trim = true, pattern = "[0-9a-f-]+", prefix = "/api/v1/documents/", suffix = "/session" }
+```
+
+- `pattern` 使用 Go RE2 正则强制匹配完整原值，不需要自行添加 `^` 和 `$`
+- `prefix`、`suffix` 分别无条件添加到原值前后，不检测或去重已有内容
+- 转换适用于 `param`、`env`、`file`、`secret`、`shell` 和 `state`，要求值为字符串
+
+普通 `inspect` 不读取动态凭证并将整个值显示为 `***`，只有 `run` 或 `inspect --reveal` 才解析并展示最终值。
+配置不会对普通字符串执行 `${VAR}` 插值。
 
 持久静态凭证仍推荐使用 `secret` / `file`；密码管理器等外部命令可通过 `shell` 动态读取。
 
