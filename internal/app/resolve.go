@@ -27,18 +27,22 @@ type resolver struct {
 }
 
 type sourceSpec struct {
-	From      string
-	Key       string
-	Path      string
-	Cmd       string
-	TimeoutMS int
-	Trim      bool
-	Prefix    *string
-	Suffix    *string
-	Pattern   string
-	Value     any
-	Default   any
-	Scope     storageScope
+	From       string
+	Key        string
+	Path       string
+	Cmd        string
+	TimeoutMS  int
+	Trim       bool
+	Prefix     *string
+	Suffix     *string
+	Pattern    string
+	Template   *string
+	Value      any
+	PathValue  any
+	MaxBytes   int64
+	MediaTypes []string
+	Default    any
+	Scope      storageScope
 }
 
 func (r resolver) resolveAny(ctx context.Context, value any) (any, error) {
@@ -96,7 +100,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		}
 		spec.Value = value
 	case "param":
-		if err := rejectUnknownSourceKeys(input, "from", "key", "default", "trim", "prefix", "suffix", "pattern"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "key", "default", "trim", "prefix", "suffix", "pattern", "output_template"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -107,7 +111,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			spec.Default = value
 		}
 	case "env":
-		if err := rejectUnknownSourceKeys(input, "from", "key", "trim", "prefix", "suffix", "pattern"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "key", "trim", "prefix", "suffix", "pattern", "output_template"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -115,7 +119,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, fmt.Errorf("%w: env source requires non-empty key", ErrConfig)
 		}
 	case "file":
-		if err := rejectUnknownSourceKeys(input, "from", "path", "trim", "prefix", "suffix", "pattern"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "path", "trim", "prefix", "suffix", "pattern", "output_template"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Path, ok = input["path"].(string)
@@ -123,7 +127,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, fmt.Errorf("%w: file source requires non-empty path", ErrConfig)
 		}
 	case "secret":
-		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix", "suffix", "pattern"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix", "suffix", "pattern", "output_template"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -136,7 +140,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		}
 		spec.Scope = scope
 	case "shell":
-		if err := rejectUnknownSourceKeys(input, "from", "cmd", "timeout_ms", "trim", "prefix", "suffix", "pattern"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "cmd", "timeout_ms", "trim", "prefix", "suffix", "pattern", "output_template"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Cmd, ok = input["cmd"].(string)
@@ -147,7 +151,7 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			spec.TimeoutMS = timeout
 		}
 	case "state":
-		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix", "suffix", "pattern"); err != nil {
+		if err := rejectUnknownSourceKeys(input, "from", "scope", "key", "trim", "prefix", "suffix", "pattern", "output_template"); err != nil {
 			return sourceSpec{}, false, err
 		}
 		spec.Key, ok = input["key"].(string)
@@ -159,6 +163,25 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 			return sourceSpec{}, false, err
 		}
 		spec.Scope = scope
+	case "file_data_url":
+		if err := rejectUnknownSourceKeys(input, "from", "path", "max_bytes", "allowed_media_types"); err != nil {
+			return sourceSpec{}, false, err
+		}
+		spec.PathValue, ok = input["path"]
+		if !ok {
+			return sourceSpec{}, false, fmt.Errorf("%w: file_data_url source requires path", ErrConfig)
+		}
+		if maxBytes, ok := integerValue(input["max_bytes"]); ok {
+			spec.MaxBytes = int64(maxBytes)
+		}
+		if spec.MaxBytes <= 0 {
+			return sourceSpec{}, false, fmt.Errorf("%w: file_data_url source requires positive max_bytes", ErrConfig)
+		}
+		mediaTypes, err := stringListValue(input["allowed_media_types"])
+		if err != nil || len(mediaTypes) == 0 {
+			return sourceSpec{}, false, fmt.Errorf("%w: file_data_url source requires non-empty allowed_media_types", ErrConfig)
+		}
+		spec.MediaTypes = mediaTypes
 	default:
 		return sourceSpec{}, false, fmt.Errorf("%w: unsupported source %q", ErrConfig, from)
 	}
@@ -189,7 +212,43 @@ func parseSourceSpec(input map[string]any) (sourceSpec, bool, error) {
 		}
 		spec.Pattern = pattern
 	}
+	if rawTemplate, ok := input["output_template"]; ok {
+		template, ok := rawTemplate.(string)
+		if !ok || !strings.Contains(template, "{{value}}") {
+			return sourceSpec{}, false, fmt.Errorf("%w: dynamic source output_template must be a string containing {{value}}", ErrConfig)
+		}
+		remaining := strings.ReplaceAll(template, "{{value}}", "")
+		if strings.Contains(remaining, "{{") || strings.Contains(remaining, "}}") {
+			return sourceSpec{}, false, fmt.Errorf("%w: dynamic source output_template only supports {{value}}", ErrConfig)
+		}
+		spec.Template = &template
+	}
+	if spec.Template != nil && (spec.Prefix != nil || spec.Suffix != nil) {
+		return sourceSpec{}, false, fmt.Errorf("%w: dynamic source prefix/suffix and output_template are mutually exclusive", ErrConfig)
+	}
 	return spec, true, nil
+}
+
+func stringListValue(raw any) ([]string, error) {
+	values, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("must be an array")
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, rawValue := range values {
+		value, ok := rawValue.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("must contain only non-empty strings")
+		}
+		value = strings.ToLower(strings.TrimSpace(value))
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func sourceScope(input map[string]any) (storageScope, error) {
@@ -335,6 +394,16 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 			return nil, fmt.Errorf("%w: state key %q not found", ErrExecution, spec.Key)
 		}
 		return applySourceTransforms(value, spec)
+	case "file_data_url":
+		pathValue, err := r.resolveAny(ctx, spec.PathValue)
+		if err != nil {
+			return nil, fmt.Errorf("%w: resolve file_data_url path: %v", ErrExecution, err)
+		}
+		path, ok := pathValue.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: file_data_url path must resolve to a string, got %T", ErrExecution, pathValue)
+		}
+		return encodeFileDataURL(strings.TrimSpace(path), spec.MaxBytes, spec.MediaTypes)
 	default:
 		return nil, fmt.Errorf("%w: unsupported source %q", ErrConfig, spec.From)
 	}
@@ -354,6 +423,13 @@ func applySourceTransforms(value any, spec sourceSpec) (any, error) {
 		if !matched {
 			return nil, fmt.Errorf("%w: value from %q source does not match pattern", ErrExecution, spec.From)
 		}
+	}
+	if spec.Template != nil {
+		asString, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: output_template requires a string result from %q source, got %T", ErrExecution, spec.From, value)
+		}
+		return strings.ReplaceAll(*spec.Template, "{{value}}", asString), nil
 	}
 	return applySourceAffixes(value, spec)
 }

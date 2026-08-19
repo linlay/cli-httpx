@@ -126,19 +126,34 @@ Authorization = { from = "env", key = "HTTPX_ACCESS_TOKEN", trim = true, prefix 
 ```
 
 `env` 只读取 `key` 显式指定的变量；变量未设置时请求失败，已经设置为空字符串时按空值处理。
-可选字符串转换按“读取或类型转换 → `trim` → `pattern` 全值校验 → `prefix` + `suffix`”执行：
+可选的字符串转换按“读取或类型转换 → `trim` → 全值 `pattern` → `prefix` + `suffix`，或 `output_template`”执行：
 
 ```toml
 [actions.session]
 path = { from = "env", key = "DOCUMENT_ID", trim = true, pattern = "[0-9a-f-]+", prefix = "/api/v1/documents/", suffix = "/session" }
 ```
 
-- `pattern` 使用 Go RE2 正则强制匹配完整原值，不需要自行添加 `^` 和 `$`
-- `prefix`、`suffix` 分别无条件添加到原值前后，不检测或去重已有内容
-- 转换适用于 `param`、`env`、`file`、`secret`、`shell` 和 `state`，要求值为字符串
+- `pattern` 使用 Go RE2 正则对转换前的原值做强制全值匹配，不需要自行添加 `^` 和 `$`
+- `prefix` 无条件添加到原值前，保留用于 `Bearer ` 等简单场景
+- `suffix` 无条件添加到原值后；可与 `prefix` 同时使用以安全组装固定路径
+- `output_template` 至少包含一次 `{{value}}`，只执行字面替换，不解析其他变量、函数或 shell 表达式
+- `prefix` / `suffix` 与 `output_template` 互斥
+- 上述转换适用于 `param`、`env`、`file`、`secret`、`shell` 和 `state`，要求转换时的值为字符串
+
+`output_template` 不做 URL、JSON、HTML 或 shell 转义；把动态值放进路径等结构位置时，应同时使用锚定的
+`pattern` 将完整原值限制为目标协议允许的字符和格式。
 
 普通 `inspect` 不读取动态凭证并将整个值显示为 `***`，只有 `run` 或 `inspect --reveal` 才解析并展示最终值。
 配置不会对普通字符串执行 `${VAR}` 插值。
+
+本地图片等小型二进制文件可以原生编码为 Data URL，不需要调用 shell、`base64` 或 `tr`：
+
+```toml
+dataUrl = { from = "file_data_url", path = { from = "env", key = "IMAGE_PATH", trim = true }, max_bytes = 8388608, allowed_media_types = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"] }
+```
+
+`file_data_url` 要求路径解析为绝对路径且目标是非空普通文件；当前稳定识别 PNG、JPEG、GIF、WebP 和 SVG 扩展名，
+同时受 `max_bytes` 与 `allowed_media_types` 双重限制。
 
 持久静态凭证仍推荐使用 `secret` / `file`；密码管理器等外部命令可通过 `shell` 动态读取。
 

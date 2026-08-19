@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +62,38 @@ path = { from = "env", key = "HTTPX_PATH", prefix = "/" }
 
 	if _, err := loadConfig(configPath); err != nil {
 		t.Fatalf("expected env source to load, got %v", err)
+	}
+}
+
+func TestLoadConfigAcceptsFileDataURLSource(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeConfig(t, `
+version = 1
+description = "Demo site"
+base_url = "https://example.com"
+
+[actions.create]
+description = "Upload image"
+method = "POST"
+path = "/images"
+body = { dataUrl = { from = "file_data_url", path = { from = "env", key = "HTTPX_IMAGE_PATH", trim = true }, max_bytes = 8388608, allowed_media_types = ["image/png", "image/jpeg"] } }
+`)
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("expected file_data_url source to load, got %v", err)
+	}
+	body, ok := cfg.Actions["create"].Body.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object body, got %T", cfg.Actions["create"].Body)
+	}
+	source, ok := body["dataUrl"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected dataUrl dynamic source, got %T", body["dataUrl"])
+	}
+	if _, ok, err := parseSourceSpec(source); err != nil || !ok {
+		t.Fatalf("parse decoded file_data_url source: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -635,6 +668,132 @@ func TestResolverPatternRequiresFullMatchWithoutLeakingValue(t *testing.T) {
 	if strings.Contains(err.Error(), invalidValue) {
 		t.Fatalf("pattern error leaked dynamic value: %v", err)
 	}
+}
+
+func TestResolverAppliesPatternBeforeOutputTemplate(t *testing.T) {
+	t.Setenv("HTTPX_TEST_DOCUMENT_ID", " 550e8400-e29b-41d4-a716-446655440000 \n")
+	r := resolver{reveal: true}
+
+	value, err := r.resolveAny(context.Background(), map[string]any{
+		"from":            "env",
+		"key":             "HTTPX_TEST_DOCUMENT_ID",
+		"trim":            true,
+		"pattern":         `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`,
+		"output_template": "/api/v1/documents/{{value}}/ai/session",
+	})
+	if err != nil {
+		t.Fatalf("resolve templated document path: %v", err)
+	}
+	if value != "/api/v1/documents/550e8400-e29b-41d4-a716-446655440000/ai/session" {
+		t.Fatalf("unexpected templated value: %#v", value)
+	}
+}
+
+func TestResolverPatternRejectsValueWithoutLeakingIt(t *testing.T) {
+	const invalidValue = "NOT-A-DOCUMENT-ID"
+	t.Setenv("HTTPX_TEST_INVALID_DOCUMENT_ID", invalidValue)
+	r := resolver{reveal: true}
+
+	_, err := r.resolveAny(context.Background(), map[string]any{
+		"from":            "env",
+		"key":             "HTTPX_TEST_INVALID_DOCUMENT_ID",
+		"pattern":         `^[0-9a-f-]+$`,
+		"output_template": "/documents/{{value}}",
+	})
+	if err == nil || !errors.Is(err, ErrExecution) {
+		t.Fatalf("expected pattern execution error, got %v", err)
+	}
+	if strings.Contains(err.Error(), invalidValue) {
+		t.Fatalf("pattern error leaked dynamic value: %v", err)
+	}
+}
+
+func TestParseSourceRejectsInvalidPatternAndOutputTemplate(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]map[string]any{
+		"invalid_pattern": {
+			"from": "env", "key": "HTTPX_VALUE", "pattern": "[",
+		},
+		"missing_placeholder": {
+			"from": "env", "key": "HTTPX_VALUE", "output_template": "/fixed",
+		},
+		"unknown_placeholder": {
+			"from": "env", "key": "HTTPX_VALUE", "output_template": "/{{value}}/{{other}}",
+		},
+		"prefix_and_template": {
+			"from": "env", "key": "HTTPX_VALUE", "prefix": "/", "output_template": "/{{value}}",
+		},
+		"suffix_and_template": {
+			"from": "env", "key": "HTTPX_VALUE", "suffix": "/", "output_template": "/{{value}}",
+		},
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := parseSourceSpec(input); err == nil || !errors.Is(err, ErrConfig) {
+				t.Fatalf("expected config error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestResolverFileDataURLFromEnvironmentPath(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "image.png")
+	content := []byte("not-a-real-png-but-binary-safe")
+	if err := os.WriteFile(imagePath, content, 0o600); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	t.Setenv("HTTPX_TEST_IMAGE_PATH", " "+imagePath+" \n")
+	r := resolver{reveal: true}
+
+	value, err := r.resolveAny(context.Background(), map[string]any{
+		"from": "file_data_url",
+		"path": map[string]any{
+			"from": "env", "key": "HTTPX_TEST_IMAGE_PATH", "trim": true,
+		},
+		"max_bytes":           1024,
+		"allowed_media_types": []any{"image/png"},
+	})
+	if err != nil {
+		t.Fatalf("resolve file_data_url: %v", err)
+	}
+	expected := "data:image/png;base64," + base64.StdEncoding.EncodeToString(content)
+	if value != expected {
+		t.Fatalf("unexpected file_data_url value: %#v", value)
+	}
+}
+
+func TestResolverFileDataURLRejectsUnsafeInputs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("relative path", func(t *testing.T) {
+		_, err := encodeFileDataURL("image.png", 1024, []string{"image/png"})
+		if err == nil || !errors.Is(err, ErrExecution) {
+			t.Fatalf("expected execution error, got %v", err)
+		}
+	})
+
+	t.Run("disallowed media type", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "image.svg")
+		if err := os.WriteFile(path, []byte("<svg/>"), 0o600); err != nil {
+			t.Fatalf("write image: %v", err)
+		}
+		_, err := encodeFileDataURL(path, 1024, []string{"image/png"})
+		if err == nil || !errors.Is(err, ErrExecution) {
+			t.Fatalf("expected execution error, got %v", err)
+		}
+	})
+
+	t.Run("oversize", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "image.png")
+		if err := os.WriteFile(path, []byte("too-large"), 0o600); err != nil {
+			t.Fatalf("write image: %v", err)
+		}
+		_, err := encodeFileDataURL(path, 4, []string{"image/png"})
+		if err == nil || !errors.Is(err, ErrExecution) {
+			t.Fatalf("expected execution error, got %v", err)
+		}
+	})
 }
 
 func TestResolverEnvironmentVariableSemantics(t *testing.T) {

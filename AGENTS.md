@@ -221,6 +221,7 @@ httpx inspect <site> <action>
 
 - `env`
 - `file`
+- `file_data_url`
 - `secret`
 - `shell`
 - `state`
@@ -242,6 +243,7 @@ httpx inspect <site> <action>
 
 - `env`：适合读取平台、CI 或容器显式注入的短期值
 - `file`：适合读取本地密钥或临时凭证
+- `file_data_url`：适合把受大小和媒体类型约束的本地图片原生编码成 Data URL
 - `secret`：适合从默认 `<site>.json` 读取静态账号、token、cookie 等凭证
 - `shell`：适合从密码管理器或命令输出动态取值
 - `state`：适合复用上一次登录或请求保存的状态
@@ -251,11 +253,13 @@ httpx inspect <site> <action>
 风险和约束：
 
 - `env` 只读取配置中 `key` 显式指定的变量，不做 `${VAR}` 字符串插值；变量缺失时失败
-- `param`、`env`、`file`、`secret`、`shell` 和 `state` 支持可选字符串字段 `pattern`、`prefix` 和 `suffix`
-- 固定转换顺序为现有类型转换、`trim`、`pattern` 全值校验、`prefix` + `suffix`
-- `pattern` 使用 Go RE2 且由实现强制匹配完整原值；错误不得回显动态值
-- `prefix` / `suffix` 不检测或去重已有内容；非字符串结果必须失败
+- `param`、`env`、`file`、`secret`、`shell` 和 `state` 支持可选字符串转换字段 `prefix`、`suffix`、`pattern`、`output_template`
+- 固定转换顺序为现有类型转换、`trim`、`pattern` 全值校验、`prefix` + `suffix` 或 `output_template`
+- `output_template` 只允许 `{{value}}` 字面占位符且至少出现一次；`prefix` / `suffix` 与 `output_template` 互斥
+- `output_template` 不承担上下文转义；用于 URL path 等结构位置时必须由配置用锚定 `pattern` 限定原值
+- `prefix` / `suffix` 不检测或去重已有内容；`pattern`、`prefix`、`suffix`、`output_template` 遇到非字符串结果时失败
 - 普通 `inspect` 对动态值仍整体输出 `***`，`inspect --reveal` 才显示转换后的值
+- `file_data_url.path` 可嵌套动态来源；最终路径必须是绝对路径和非空普通文件，并由 `max_bytes`、扩展名映射和 `allowed_media_types` 共同约束
 - 静态凭证仍推荐使用 `secret` / `file`，注入式短期凭证可使用 `env`
 - `shell` 依赖本机环境，超时或命令失败会导致执行失败
 - `state` 依赖本地 state 文件，适合会话复用，不适合作为跨环境共享机制
@@ -444,8 +448,8 @@ CLI 有两种主要输出模式：
 产物约定：
 
 - 输出目录：`dist/<version>/`
-- 平台矩阵：`darwin/linux × amd64/arm64`
-- 文件名：`httpx_<version>_<goos>_<goarch>.tar.gz`
+- 平台矩阵：`darwin/linux/windows × amd64/arm64`
+- 文件名：darwin/Linux 为 `httpx_<version>_<goos>_<goarch>.tar.gz`，Windows 为 `httpx_<version>_windows_<goarch>.zip`
 - 额外生成：`httpx_<version>_checksums.txt`
 
 分发约定：
