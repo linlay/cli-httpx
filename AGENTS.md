@@ -86,13 +86,24 @@ CLI 框架约定：
 运行时还支持一个 CLI 级的 extractor 输入：
 
 - `--extract <json-object>`
+- `--extract-json-file <path|->`
 
 语义约定：
 
 - `--param` 只参与请求编译
+- `--param-json-file <path|->` 从 JSON object 文件或 stdin 读取 typed 参数，只参与请求编译
 - `--extract` 只参与 extractor 执行
+- `--extract-json-file <path|->` 从 JSON object 文件或 stdin 读取 extractor 输入，只参与 extractor 执行
 - jq extractor 通过 `.extract` 读取该输入
 - regex extractor 通过 `{{extract.key}}` 模板占位符读取该输入
+
+文件式输入约定：
+
+- `-` 明确表示 stdin，不隐式探测管道
+- 单个输入最大 1 MiB，顶层必须是 JSON object
+- 文件保留对象、数组、标量和 `null` 类型；普通 `--param key=value` 仍为字符串
+- 文件内容先加载，再由 `--param` / `--extract` 覆盖同名顶层字段，不递归合并
+- 两个文件 flag 各自最多出现一次，且不能同时从 stdin 读取
 
 请求体约定：
 
@@ -192,6 +203,8 @@ httpx inspect <site> <action>
 - `inspect <site> <action>`：用于无副作用验证 action 编译结果
 - `run <site> <action>`：用于真实请求验证，可能依赖登录态或站点自身匿名访问策略
 - `run <site> <action> --extract '{...}'`：在不改配置的前提下给 extractor 传入运行时过滤条件
+- `run <site> <action> --param-json-file <path|->`：从 JSON object 文件或 stdin 传入 typed 请求参数
+- `run <site> <action> --extract-json-file <path|->`：从 JSON object 文件或 stdin 传入 extractor 条件
 - `login <site>`：
   - 若配置了 `[login]`，应执行简单用户名密码登录并刷新 state
   - 若未配置 `[login]`，应返回配置错误

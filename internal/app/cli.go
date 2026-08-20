@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/linlay/cli-httpx/internal/buildinfo"
@@ -14,13 +15,19 @@ import (
 type requestRunner func(commandRequest) int
 
 type cliOptions struct {
-	global    globalOptions
-	formatSet bool
-	configSet bool
-	version   bool
+	global             globalOptions
+	formatSet          bool
+	configSet          bool
+	paramJSONFile      string
+	paramJSONFileSet   bool
+	extractJSONFile    string
+	extractJSONFileSet bool
+	version            bool
 }
 
-type paramValues map[string]string
+const maxCLIJSONInputBytes = 1 << 20
+
+type paramValues map[string]any
 
 type formatValue struct {
 	options *cliOptions
@@ -29,6 +36,12 @@ type formatValue struct {
 type extractValue struct {
 	value *map[string]any
 	set   bool
+}
+
+type jsonFileValue struct {
+	name  string
+	value *string
+	set   *bool
 }
 
 type configDirValue struct {
@@ -60,7 +73,7 @@ func (p *paramValues) String() string {
 	}
 	parts := make([]string, 0, len(*p))
 	for key, value := range *p {
-		parts = append(parts, key+"="+value)
+		parts = append(parts, key+"="+fmt.Sprint(value))
 	}
 	return strings.Join(parts, ",")
 }
@@ -71,9 +84,31 @@ func (p *paramValues) Set(raw string) error {
 		return fmt.Errorf("invalid --param %q, expected key=value", raw)
 	}
 	if *p == nil {
-		*p = map[string]string{}
+		*p = map[string]any{}
 	}
 	(*p)[key] = value
+	return nil
+}
+
+func (v *jsonFileValue) String() string {
+	if v == nil || v.value == nil {
+		return ""
+	}
+	return *v.value
+}
+
+func (v *jsonFileValue) Set(raw string) error {
+	if v == nil || v.value == nil || v.set == nil {
+		return fmt.Errorf("internal error: missing JSON file target")
+	}
+	if *v.set {
+		return fmt.Errorf("--%s may only be provided once", v.name)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("--%s requires a non-empty path or -", v.name)
+	}
+	*v.value = raw
+	*v.set = true
 	return nil
 }
 
@@ -120,15 +155,51 @@ func (v *extractValue) Set(raw string) error {
 }
 
 func parseExtractInput(raw string) (map[string]any, error) {
+	return parseJSONObject([]byte(raw), "--extract")
+}
+
+func parseJSONObject(data []byte, source string) (map[string]any, error) {
 	var value any
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
-		return nil, fmt.Errorf("invalid --extract JSON: %v", err)
+	if err := json.Unmarshal(data, &value); err != nil {
+		return nil, fmt.Errorf("invalid %s JSON: %v", source, err)
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("invalid --extract %q, expected a JSON object", raw)
+		return nil, fmt.Errorf("invalid %s, expected a JSON object", source)
 	}
 	return object, nil
+}
+
+func readJSONObjectFile(path, flagName string, stdin io.Reader) (map[string]any, error) {
+	var (
+		reader io.Reader
+		close  func() error
+	)
+	if path == "-" {
+		reader = stdin
+	} else {
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("read --%s %q: %v", flagName, path, err)
+		}
+		reader = file
+		close = file.Close
+	}
+	if reader == nil {
+		return nil, fmt.Errorf("read --%s %q: stdin is unavailable", flagName, path)
+	}
+	if close != nil {
+		defer close()
+	}
+
+	data, err := io.ReadAll(io.LimitReader(reader, maxCLIJSONInputBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read --%s %q: %v", flagName, path, err)
+	}
+	if len(data) > maxCLIJSONInputBytes {
+		return nil, fmt.Errorf("--%s input exceeds 1 MiB", flagName)
+	}
+	return parseJSONObject(data, fmt.Sprintf("--%s %q", flagName, path))
 }
 
 func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner) *cobra.Command {
@@ -172,7 +243,9 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer, run requestRunner
 	flags.BoolVar(&options.version, "version", false, "Print version information")
 	flags.Var(&formatValue{options: options}, "format", "Output format: text or json")
 	flags.Var((*paramValues)(&options.global.Params), "param", "Runtime request parameter in key=value form")
+	flags.Var(&jsonFileValue{name: "param-json-file", value: &options.paramJSONFile, set: &options.paramJSONFileSet}, "param-json-file", "Runtime request parameters from a JSON object file; use - for stdin")
 	flags.Var(&extractValue{value: &options.global.ExtractInput}, "extract", "Runtime extractor input as a JSON object")
+	flags.Var(&jsonFileValue{name: "extract-json-file", value: &options.extractJSONFile, set: &options.extractJSONFileSet}, "extract-json-file", "Runtime extractor input from a JSON object file; use - for stdin")
 
 	root.AddCommand(
 		newActionRequestCommand(commandRun, "run <site> <action>", "Execute an action request", cobra.ExactArgs(2), options, run),
@@ -195,7 +268,7 @@ func newActionRequestCommand(kind commandKind, use, short string, args cobra.Pos
 		Short: short,
 		Args:  args,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req, err := buildCommandRequest(kind, args, options)
+			req, err := buildCommandRequest(kind, args, options, cmd.InOrStdin())
 			if err != nil {
 				return &exitError{Code: ExitConfig, Err: err}
 			}
@@ -241,7 +314,7 @@ func parseArgs(args []string) (commandRequest, error) {
 	return req, nil
 }
 
-func buildCommandRequest(kind commandKind, args []string, options *cliOptions) (commandRequest, error) {
+func buildCommandRequest(kind commandKind, args []string, options *cliOptions, stdin io.Reader) (commandRequest, error) {
 	req := commandRequest{
 		Command: kind,
 		Options: options.snapshot(),
@@ -275,26 +348,57 @@ func buildCommandRequest(kind commandKind, args []string, options *cliOptions) (
 		}
 	}
 
-	if err := validateCommandOptions(&req, options.formatSet); err != nil {
+	if err := validateCommandOptions(&req, options); err != nil {
+		return commandRequest{}, err
+	}
+	if err := applyJSONFileInputs(&req, options, stdin); err != nil {
 		return commandRequest{}, err
 	}
 
 	return req, nil
 }
 
+func applyJSONFileInputs(req *commandRequest, options *cliOptions, stdin io.Reader) error {
+	if options.paramJSONFileSet && options.extractJSONFileSet && options.paramJSONFile == "-" && options.extractJSONFile == "-" {
+		return fmt.Errorf("--param-json-file and --extract-json-file cannot both read from stdin")
+	}
+
+	if options.paramJSONFileSet {
+		fileParams, err := readJSONObjectFile(options.paramJSONFile, "param-json-file", stdin)
+		if err != nil {
+			return err
+		}
+		for key, value := range req.Options.Params {
+			fileParams[key] = cloneJSONValue(value)
+		}
+		req.Options.Params = fileParams
+	}
+	if options.extractJSONFileSet {
+		fileExtract, err := readJSONObjectFile(options.extractJSONFile, "extract-json-file", stdin)
+		if err != nil {
+			return err
+		}
+		for key, value := range req.Options.ExtractInput {
+			fileExtract[key] = cloneJSONValue(value)
+		}
+		req.Options.ExtractInput = fileExtract
+	}
+	return nil
+}
+
 func (o *cliOptions) snapshot() globalOptions {
 	result := o.global
 	result.ConfigExplicit = o.configSet
 	if len(o.global.Params) > 0 {
-		result.Params = make(map[string]string, len(o.global.Params))
+		result.Params = make(map[string]any, len(o.global.Params))
 		for key, value := range o.global.Params {
-			result.Params[key] = value
+			result.Params[key] = cloneJSONValue(value)
 		}
 	}
 	if o.global.ExtractInput != nil {
 		result.ExtractInput = make(map[string]any, len(o.global.ExtractInput))
 		for key, value := range o.global.ExtractInput {
-			result.ExtractInput[key] = value
+			result.ExtractInput[key] = cloneJSONValue(value)
 		}
 	}
 	return result
@@ -312,14 +416,19 @@ func setFormat(opts *globalOptions, value string) error {
 	}
 }
 
-func validateCommandOptions(req *commandRequest, formatSet bool) error {
+func validateCommandOptions(req *commandRequest, options *cliOptions) error {
 	switch req.Command {
 	case commandRun, commandLogin:
 		if req.Options.Format != formatText && req.Options.Format != formatJSON {
 			return fmt.Errorf("--format %s is not supported with %s", req.Options.Format, req.Command)
 		}
-		if req.Command == commandLogin && req.Options.ExtractInput != nil {
-			return fmt.Errorf("--extract is not supported with %s", req.Command)
+		if req.Command == commandLogin {
+			if req.Options.ExtractInput != nil {
+				return fmt.Errorf("--extract is not supported with %s", req.Command)
+			}
+			if options.extractJSONFileSet {
+				return fmt.Errorf("--extract-json-file is not supported with %s", req.Command)
+			}
 		}
 	case commandInspect:
 		if req.Options.Format != formatJSON {
@@ -335,8 +444,14 @@ func validateCommandOptions(req *commandRequest, formatSet bool) error {
 		if len(req.Options.Params) > 0 {
 			return fmt.Errorf("--param is not supported with %s", req.Command)
 		}
+		if options.paramJSONFileSet {
+			return fmt.Errorf("--param-json-file is not supported with %s", req.Command)
+		}
 		if req.Options.ExtractInput != nil {
 			return fmt.Errorf("--extract is not supported with %s", req.Command)
+		}
+		if options.extractJSONFileSet {
+			return fmt.Errorf("--extract-json-file is not supported with %s", req.Command)
 		}
 		if req.Options.Reveal {
 			return fmt.Errorf("--reveal is not supported with %s", req.Command)
@@ -346,7 +461,7 @@ func validateCommandOptions(req *commandRequest, formatSet bool) error {
 	if req.Command != commandInspect && req.Options.Reveal {
 		return fmt.Errorf("--reveal is only supported with inspect")
 	}
-	if !formatSet && req.Options.Format == "" {
+	if !options.formatSet && req.Options.Format == "" {
 		return fmt.Errorf("internal error: format not set")
 	}
 	return nil

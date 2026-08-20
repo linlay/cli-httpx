@@ -20,7 +20,7 @@ type resolver struct {
 	state     *profileState
 	states    *scopedStateSet
 	reveal    bool
-	params    map[string]string
+	params    map[string]any
 	site      string
 	secretDir string
 	options   globalOptions
@@ -304,9 +304,9 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		return spec.Value, nil
 	case "param":
 		if value, ok := r.params[spec.Key]; ok {
-			value = maybeTrim(value, spec.Trim)
-			if spec.Default != nil {
-				coerced, err := coerceToSampleType(value, spec.Default)
+			if stringValue, isString := value.(string); isString && spec.Default != nil {
+				stringValue = maybeTrim(stringValue, spec.Trim)
+				coerced, err := coerceToSampleType(stringValue, spec.Default)
 				if err != nil {
 					return nil, fmt.Errorf("%w: parameter %q: %v", ErrExecution, spec.Key, err)
 				}

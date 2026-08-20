@@ -610,7 +610,7 @@ func TestResolverAppliesPatternAndAffixesToStringSourcesAfterTrim(t *testing.T) 
 	r := resolver{
 		state:     &profileState{Values: map[string]string{"token": " token-value \n"}},
 		reveal:    true,
-		params:    map[string]string{"token": " token-value \n"},
+		params:    map[string]any{"token": " token-value \n"},
 		site:      "demo",
 		secretDir: secretDir,
 	}
@@ -639,7 +639,7 @@ func TestResolverAppliesPatternAndAffixesToStringSourcesAfterTrim(t *testing.T) 
 func TestResolverPrefixRequiresStringResult(t *testing.T) {
 	r := resolver{
 		reveal: true,
-		params: map[string]string{"count": "42"},
+		params: map[string]any{"count": "42"},
 	}
 	_, err := r.resolveAny(context.Background(), map[string]any{
 		"from":    "param",
@@ -1564,7 +1564,7 @@ body = { keyword = { from = "param", key = "query" }, source = { from = "literal
 		Options: globalOptions{
 			StateDir: t.TempDir(),
 			Format:   formatJSON,
-			Params: map[string]string{
+			Params: map[string]any{
 				"query": "golang",
 				"id":    "8001",
 			},
@@ -1622,7 +1622,7 @@ body = { id = { from = "param", key = "id", default = 9062 } }
 		Options: globalOptions{
 			StateDir: t.TempDir(),
 			Format:   formatJSON,
-			Params: map[string]string{
+			Params: map[string]any{
 				"id": "not-a-number",
 			},
 		},
@@ -1759,7 +1759,7 @@ path = "/default"
 		Options: globalOptions{
 			StateDir: t.TempDir(),
 			Format:   formatJSON,
-			Params: map[string]string{
+			Params: map[string]any{
 				"proxy": "http://127.0.0.1:8001",
 			},
 		},
@@ -3209,7 +3209,7 @@ path = "/search"
 	if !strings.Contains(stdout, "\nDescription:\n  Load profile\n") {
 		t.Fatalf("expected description section in action text: %q", stdout)
 	}
-	if !strings.Contains(stdout, "\nFlags:\n") || !strings.Contains(stdout, "--param key=value") || !strings.Contains(stdout, "--extract <json-object>") || !strings.Contains(stdout, "-h, --help") {
+	if !strings.Contains(stdout, "\nFlags:\n") || !strings.Contains(stdout, "--param key=value") || !strings.Contains(stdout, "--param-json-file <path|->") || !strings.Contains(stdout, "--extract <json-object>") || !strings.Contains(stdout, "--extract-json-file <path|->") || !strings.Contains(stdout, "-h, --help") {
 		t.Fatalf("expected flags section in action text: %q", stdout)
 	}
 	if !strings.Contains(stdout, "\nParams fields:\n") || !strings.Contains(stdout, "name     type    required  default") || !strings.Contains(stdout, `user_id  string  yes       -        Profile id   "42"`) {

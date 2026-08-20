@@ -199,9 +199,24 @@ CLI 现在使用 Cobra 风格的根命令和子命令组织；帮助信息统一
 - `--state <dir>`：覆盖 global state 目录；不覆盖 Chat state
 - `--format text|json`：输出格式
 - `--param key=value`：传入运行时参数，可重复
+- `--param-json-file <path|->`：从 JSON object 文件传入运行时参数；`-` 表示 stdin
 - `--extract <json-object>`：传入 extractor 运行时输入
+- `--extract-json-file <path|->`：从 JSON object 文件传入 extractor 输入；`-` 表示 stdin
 - `--timeout <duration>`：覆盖配置超时
 - `--reveal`：仅 `inspect` 下显示真实敏感值
+
+文件式输入的顶层必须是 JSON object，单个输入最大 1 MiB。文件中的对象、数组、标量和 `null`
+会保留 JSON 类型；`--param key=value` 仍传入字符串。文件和内联参数可以同时使用，合并时先读取文件，
+再由内联参数覆盖同名的顶层字段，与 flags 的书写顺序无关；嵌套对象不做递归合并。
+
+```bash
+httpx run demo create --param-json-file params.json --param dry_run=true
+generate-params | httpx run demo create --param-json-file -
+httpx run demo summary --extract-json-file filters.json --extract '{"days":7}'
+```
+
+`--param-json-file` 与 `--extract-json-file` 各自最多出现一次，且不能同时使用 `-`，因为 stdin
+只能由一个输入消费。stdin 仅在显式指定 `-` 时读取，不会自动探测管道。
 
 ## 文件上传与下载
 
@@ -277,6 +292,7 @@ extract_group = 1
 - 配置了 `extract_*` 后，`run/login --format json` 仍保留完整 envelope，只是其中的 `body` 会变成处理后的 body
 - `jq` 可以一次组装多个 key，例如 `.body | {id, title, owner}` 或 `.body.items | map({id, name})`
 - `--extract` 只给 extractor 用，不参与请求编译；在 jq extractor 里通过 `.extract` 访问
+- `--extract-json-file <path|->` 与 `--extract` 语义相同，但从 JSON object 文件或 stdin 读取；同时使用时由 `--extract` 覆盖同名顶层字段
 - regex extractor 可在 `extract_pattern` 里使用 `{{extract.key}}`
 - action 可用 `params = [...]` 和 `extracts = [...]` 声明运行时输入契约，供 discovery 命令和智能体读取
 

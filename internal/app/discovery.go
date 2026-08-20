@@ -462,9 +462,15 @@ func writeActionFlagsSection(w io.Writer, hasParams, hasExtracts bool) error {
 		if _, err := fmt.Fprintln(tw, "--param key=value\tRequest parameter in key=value form; repeatable"); err != nil {
 			return err
 		}
+		if _, err := fmt.Fprintln(tw, "--param-json-file <path|->\tRequest parameters from a JSON object file; use - for stdin"); err != nil {
+			return err
+		}
 	}
 	if hasExtracts {
 		if _, err := fmt.Fprintln(tw, "--extract <json-object>\tExtractor input as a JSON object"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(tw, "--extract-json-file <path|->\tExtractor input from a JSON object file; use - for stdin"); err != nil {
 			return err
 		}
 	}

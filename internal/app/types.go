@@ -40,7 +40,7 @@ type globalOptions struct {
 	ChatDirSet     bool
 	Inspect        bool
 	Reveal         bool
-	Params         map[string]string
+	Params         map[string]any
 	ExtractInput   map[string]any
 }
 
