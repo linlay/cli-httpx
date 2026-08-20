@@ -528,9 +528,22 @@ func writeExamplesSection(w io.Writer, examples []string) error {
 
 func buildActionExamples(detail actionDetail) []string {
 	base := fmt.Sprintf("httpx run %s %s", detail.Site, detail.Name)
+	if payload, ok := buildParamJSONFileExample(detail.Params); ok {
+		examples := []string{
+			"params.json: " + payload,
+			base + " --param-json-file /absolute/path/params.json",
+		}
+		if extractPayload := buildExtractJSONFileExample(detail.Extracts); extractPayload != "" {
+			examples = append(examples,
+				"extract.json: "+extractPayload,
+				base+" --param-json-file /absolute/path/params.json --extract-json-file /absolute/path/extract.json",
+			)
+		}
+		return examples
+	}
 	requiredParamArgs := buildRequiredParamExampleArgs(detail.Params)
 	paramArgs := buildParamExampleArgs(detail.Params)
-	extractArg := buildExtractExampleArg(detail.Extracts)
+	extractPayload := buildExtractJSONFileExample(detail.Extracts)
 
 	primary := base
 	if len(requiredParamArgs) > 0 {
@@ -544,11 +557,14 @@ func buildActionExamples(detail actionDetail) []string {
 			candidates = append(candidates, withAllParams)
 		}
 	}
-	if extractArg != "" {
-		candidates = append(candidates, primary+" "+extractArg)
+	if extractPayload != "" {
+		candidates = append(candidates,
+			"extract.json: "+extractPayload,
+			primary+" --extract-json-file /absolute/path/extract.json",
+		)
 	}
-	if withAllParams != primary && extractArg != "" {
-		candidates = append(candidates, withAllParams+" "+extractArg)
+	if withAllParams != primary && extractPayload != "" {
+		candidates = append(candidates, withAllParams+" --extract-json-file /absolute/path/extract.json")
 	}
 
 	seen := make(map[string]struct{}, len(candidates))
@@ -561,6 +577,44 @@ func buildActionExamples(detail actionDetail) []string {
 		examples = append(examples, candidate)
 	}
 	return examples
+}
+
+func buildParamJSONFileExample(specs []actionInputSpec) (string, bool) {
+	payload := make(map[string]any)
+	structured := false
+	for _, spec := range specs {
+		if !spec.Required && spec.Example == nil {
+			continue
+		}
+		value := spec.Example
+		normalizedType := strings.ToLower(strings.TrimSpace(spec.Type))
+		if value == nil {
+			switch normalizedType {
+			case "object":
+				value = map[string]any{}
+			case "array":
+				value = []any{}
+			default:
+				value = "<" + spec.Name + ">"
+			}
+		}
+		switch value.(type) {
+		case map[string]any, []any:
+			structured = true
+		}
+		if normalizedType == "object" || normalizedType == "array" {
+			structured = true
+		}
+		payload[spec.Name] = value
+	}
+	if !structured {
+		return "", false
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "{...}", true
+	}
+	return string(data), true
 }
 
 func buildRequiredParamExampleArgs(specs []actionInputSpec) []string {
@@ -605,7 +659,7 @@ func buildParamExampleArgs(specs []actionInputSpec) []string {
 	return args
 }
 
-func buildExtractExampleArg(specs []actionInputSpec) string {
+func buildExtractJSONFileExample(specs []actionInputSpec) string {
 	if len(specs) == 0 {
 		return ""
 	}
@@ -624,9 +678,9 @@ func buildExtractExampleArg(specs []actionInputSpec) string {
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return "--extract '{...}'"
+		return "{...}"
 	}
-	return "--extract " + shellSingleQuote(string(data))
+	return string(data)
 }
 
 func renderParamExampleValue(spec actionInputSpec) string {

@@ -3221,7 +3221,7 @@ path = "/search"
 	if !strings.Contains(stdout, `group  string  no        -        Filter group  "GROUP_A"`) {
 		t.Fatalf("expected extract row in action text: %q", stdout)
 	}
-	if !strings.Contains(stdout, "\nExamples:\n") || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42`) || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42 --extract '{"group":"GROUP_A"}'`) {
+	if !strings.Contains(stdout, "\nExamples:\n") || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42`) || !strings.Contains(stdout, `extract.json: {"group":"GROUP_A"}`) || !strings.Contains(stdout, `httpx run alpha profile --param user_id=42 --extract-json-file /absolute/path/extract.json`) {
 		t.Fatalf("expected examples section in action text: %q", stdout)
 	}
 
@@ -4083,6 +4083,30 @@ func TestMainLoadCommandIsUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(stderr, `unknown command "load" for "httpx"`) {
 		t.Fatalf("unexpected stderr: %q", stderr)
+	}
+}
+
+func TestBuildActionExamplesUsesJSONFilesForStructuredInputs(t *testing.T) {
+	examples := strings.Join(buildActionExamples(actionDetail{
+		Site: "office",
+		Name: "execute_batch",
+		Params: []actionInputSpec{
+			{Name: "tool_calls", Type: "array", Required: true, Example: []any{
+				map[string]any{"name": "set_values", "arguments": map[string]any{
+					"values": []any{[]any{"中文", nil, `quote'\"\\line\nnext`}},
+				}},
+			}},
+			{Name: "request_id", Type: "string", Required: true, Example: "batch-1"},
+		},
+	}), "\n")
+	if !strings.Contains(examples, `params.json: {"request_id":"batch-1","tool_calls":[{"arguments":{"values":[["中文",null,"quote'\\\"\\\\line\\nnext"]]},"name":"set_values"}]}`) {
+		t.Fatalf("expected typed params JSON example: %s", examples)
+	}
+	if !strings.Contains(examples, `httpx run office execute_batch --param-json-file /absolute/path/params.json`) {
+		t.Fatalf("expected params file command: %s", examples)
+	}
+	if strings.Contains(examples, "--param tool_calls=") {
+		t.Fatalf("structured params must not be rendered inline: %s", examples)
 	}
 }
 
