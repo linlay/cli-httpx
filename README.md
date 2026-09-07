@@ -157,6 +157,12 @@ dataUrl = { from = "file_data_url", path = { from = "env", key = "IMAGE_PATH", t
 
 持久静态凭证仍推荐使用 `secret` / `file`；密码管理器等外部命令可通过 `shell` 动态读取。
 
+Windows 的 `from = "shell"` 要求启用了内置 Git Bash 的 Platform 会话注入绝对路径
+`AP_GIT_BASH_EXE`，固定使用 `--noprofile --norc -o pipefail -c`，不搜索系统 Git，
+也不回退 PowerShell。入口缺失或不可用时明确失败；超时使用 Windows Job Object
+清理受管子进程树。Unix 仍使用 `/bin/sh -lc`。Windows 本地验收需要在原生 runner
+设置 `AP_TEST_GIT_BASH_EXE` 后运行 `go test ./...`，交叉编译不能代替该验收。
+
 实际站点的 site 配置更适合放在用户本地配置目录：
 
 - `~/.config/httpx`

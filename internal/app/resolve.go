@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -362,12 +361,15 @@ func (r resolver) resolveSource(ctx context.Context, spec sourceSpec) (any, erro
 		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		cmd := exec.CommandContext(execCtx, "/bin/sh", "-lc", spec.Cmd)
+		cmd, err := sourceShellCommand(execCtx, spec.Cmd)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrExecution, err)
+		}
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
+		if err := runSourceShell(cmd); err != nil {
 			message := strings.TrimSpace(stderr.String())
 			if message == "" {
 				message = err.Error()

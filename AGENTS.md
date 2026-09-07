@@ -275,6 +275,7 @@ httpx inspect <site> <action>
 - `file_data_url.path` 可嵌套动态来源；最终路径必须是绝对路径和非空普通文件，并由 `max_bytes`、扩展名映射和 `allowed_media_types` 共同约束
 - 静态凭证仍推荐使用 `secret` / `file`，注入式短期凭证可使用 `env`
 - `shell` 依赖本机环境，超时或命令失败会导致执行失败
+- Windows `shell` 仅使用 Platform 注入的绝对 `AP_GIT_BASH_EXE`；入口缺失时失败，不查找系统 Shell。固定禁用 profile/rc 并开启 pipefail；Job Object 管理嵌套命令生命周期。Unix `/bin/sh -lc` 契约不变。Windows 原生集成测试以 `AP_TEST_GIT_BASH_EXE` 显式启用。
 - `state` 依赖本地 state 文件，适合会话复用，不适合作为跨环境共享机制
 - `param` 缺失时会失败，除非配置了默认值
 
