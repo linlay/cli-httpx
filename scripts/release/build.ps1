@@ -29,7 +29,7 @@ if ($version -notmatch '^v\d+\.\d+\.\d+([.\-][0-9A-Za-z.\-]+)?$') {
 
 $distDir = Join-Path $REPO_ROOT "dist\$version"
 $stageDir = Join-Path $distDir ".stage"
-$buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$buildTime = (& git -C $REPO_ROOT show -s --format=%cI HEAD).Trim()
 
 Push-Location $REPO_ROOT
 try {
@@ -99,6 +99,10 @@ foreach ($t in $targets) {
         if ($null -eq $oldOS) { Remove-Item Env:GOOS -ErrorAction SilentlyContinue } else { $env:GOOS = $oldOS }
         if ($null -eq $oldArch) { Remove-Item Env:GOARCH -ErrorAction SilentlyContinue } else { $env:GOARCH = $oldArch }
     }
+
+    & go run (Join-Path $REPO_ROOT "scripts/release/package-connector.go") --root $REPO_ROOT --binary (Join-Path $packageDir $binaryName) --os $goos --arch $goarch
+    if ($LASTEXITCODE -ne 0) { throw "connector packaging failed" }
+    $archives += "builtin.httpx_${version}_${goos}_${goarch}.zip"
 
     Copy-Item (Join-Path $REPO_ROOT "README.md") (Join-Path $packageDir "README.md")
     if ($includeLicense) {

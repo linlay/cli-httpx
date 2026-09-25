@@ -46,7 +46,7 @@ fi
 
 dist_dir="$repo_root/dist/$version"
 stage_dir="$dist_dir/.stage"
-build_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+build_time="$(git -C "$repo_root" show -s --format=%cI HEAD)"
 commit="$(git -C "$repo_root" rev-parse --short HEAD)"
 
 mkdir -p "$dist_dir"
@@ -97,6 +97,9 @@ for target in "${targets[@]}"; do
       -ldflags "-s -w -X github.com/linlay/cli-httpx/internal/buildinfo.Version=$version -X github.com/linlay/cli-httpx/internal/buildinfo.Commit=$commit -X github.com/linlay/cli-httpx/internal/buildinfo.BuildTime=$build_time" \
       -o "$package_dir/$binary_name" \
       ./cmd/httpx
+
+  go run "$repo_root/scripts/release/package-connector.go" --root "$repo_root" --binary "$package_dir/$binary_name" --os "$goos" --arch "$goarch"
+  archives+=("builtin.httpx_${version}_${goos}_${goarch}.zip")
 
   cp "$repo_root/README.md" "$package_dir/README.md"
   if [[ "$include_license" == "true" ]]; then
