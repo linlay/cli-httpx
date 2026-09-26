@@ -622,3 +622,11 @@ state 文件是本地明文 JSON。更完整的状态模型、写回时机和安
 项目位于 `agent-platform-connectors/httpx`，`connector/` 是 connector.json 模板、cli.json、skills 与全部资源的唯一源码。`VERSION` 同时控制 CLI 和连接器发布版本；模板不维护 version，构建时生成。任何 CLI、清单或技能改动均需发布新版本。
 
 现有 Shell/PowerShell 发布脚本额外生成 `dist/<version>/builtin.httpx_<version>_<os>_<arch>.zip`，内容位于 `runtime/connectors/builtin.httpx/`，包含声明、完整 skills 和目标平台 bin。Platform 按完整包摘要消费，不修改包内内容。原 CLI 独立发布包继续提供。包生成器检查 VERSION 满足 cli.json.minVersion（包含 SemVer 预发布版本比较）。
+
+### 可复现发布打包
+
+发布打包需要 Python 3（Unix 命令 `python3`，Windows 命令 `python`）。
+`scripts/reproducible-package.py` 固定归档顺序、时间、权限和压缩头，保留文件内容与符号链接；
+sidecar 额外规范 Cargo 本机路径和 SBOM 可变元数据，保留依赖与许可证事实。
+复验必须使用相同源码、依赖、目标平台、编译器、Python/zlib 和 Syft 版本；不保证跨工具链逐字节相同。
+历史已发布归档不能重新打包覆盖。

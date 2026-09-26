@@ -106,19 +106,7 @@ for target in "${targets[@]}"; do
     cp "$repo_root/LICENSE" "$package_dir/LICENSE"
   fi
 
-  if [[ "$archive_ext" == "zip" ]]; then
-    command -v zip >/dev/null 2>&1 || {
-      echo "zip is required to package Windows releases" >&2
-      exit 1
-    }
-    rm -f "$dist_dir/$archive_name"
-    (
-      cd "$package_dir"
-      zip -qr "$dist_dir/$archive_name" .
-    )
-  else
-    tar -C "$package_dir" -czf "$dist_dir/$archive_name" .
-  fi
+  python3 "$repo_root/scripts/reproducible-package.py" --stage "$package_dir" --output "$dist_dir/$archive_name"
 done
 
 (

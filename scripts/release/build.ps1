@@ -110,18 +110,9 @@ foreach ($t in $targets) {
     }
 
     $archivePath = Join-Path $distDir $archiveName
-    if ($archiveExt -eq "zip") {
-        if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
-        Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $archivePath -CompressionLevel Optimal
-    } else {
-        Push-Location $packageDir
-        try {
-            & tar -czf $archivePath .
-            if ($LASTEXITCODE -ne 0) { Write-Error "tar failed for $goos/$goarch" }
-        } finally {
-            Pop-Location
-        }
-    }
+    & python (Join-Path $REPO_ROOT "scripts/reproducible-package.py") --stage $packageDir --output $archivePath
+    if ($LASTEXITCODE -ne 0) { throw "Deterministic packaging failed" }
+
 }
 
 # Generate checksums
