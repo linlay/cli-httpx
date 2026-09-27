@@ -1,5 +1,6 @@
 ---
 name: builtin-httpx
+displayName: 内置 HTTP 工具
 description: "Use this skill whenever another skill or user needs to discover, inspect, run, or troubleshoot configured httpx site/action workflows, including fixed site/action workflows supplied by domain skills. Use JSON-file inputs for user-provided text, paths, structured values, quotes, newlines, or other shell-sensitive content on every OS, especially Windows PowerShell 5.1. Treat httpx as a stateful site/action CLI with explicit action contracts, not as curl and not as a raw config/state file interface."
 metadata:
   version: "0.2.0"
