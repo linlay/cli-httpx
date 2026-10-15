@@ -39,7 +39,7 @@ func TestCompletePackageIsDeterministicAndVersioned(t *testing.T) {
 		}
 	}
 	write("VERSION", "v1.2.3\n")
-	write("connector/connector.json", `{"id":"builtin.dbx","name":"DBX","type":"cli","auth_mode":null}`)
+	write("connector/connector.json", `{"id":"builtin.dbx","name":"DBX","type":"cli","authMode":"self"}`)
 	write("connector/cli.json", `{"versionCheck":{"minVersion":"1.2.0"}}`)
 	write("connector/skills/usage/SKILL.md", "original skill bytes")
 	write("connector/skills/usage/references/example.md", "reference bytes")

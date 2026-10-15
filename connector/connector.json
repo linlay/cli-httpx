@@ -2,6 +2,6 @@
   "id": "builtin.httpx",
   "name": "httpx",
   "type": "cli",
-  "auth_mode": null,
+  "authMode": "self",
   "description": "Platform bundled httpx CLI"
 }
