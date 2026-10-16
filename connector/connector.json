@@ -3,5 +3,6 @@
   "name": "httpx",
   "type": "cli",
   "authMode": "self",
-  "description": "Platform bundled httpx CLI"
+  "description": "Platform bundled httpx CLI",
+  "icon": "assets/icon.svg"
 }
